@@ -1,5 +1,17 @@
 # ERGMRank.jl
 
+
+[![Network Analysis](https://img.shields.io/badge/Network-Analysis-orange.svg)](https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl)
+[![Build Status](https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Documentation](https://img.shields.io/badge/docs-stable-blue.svg)](https://statistical-network-analysis-with-Julia.github.io/ERGMRank.jl/stable/)
+[![Documentation](https://img.shields.io/badge/docs-dev-blue.svg)](https://statistical-network-analysis-with-Julia.github.io/ERGMRank.jl/dev/)
+[![Julia](https://img.shields.io/badge/Julia-1.9+-purple.svg)](https://julialang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+<p align="center">
+  <img src="docs/src/assets/logo.svg" alt="ERGMRank.jl icon" width="160">
+</p>
+
 ERGMs for Rank-Order Networks in Julia.
 
 ## Overview
@@ -12,7 +24,7 @@ This package is a Julia port of the R `ergm.rank` package from the StatNet colle
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/Statistical-network-analysis-with-Julia/ERGMRank.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl")
 ```
 
 ## Features
@@ -161,6 +173,19 @@ P(R = r) ∝ exp(θ'g(r))
 
 Where g(r) are sufficient statistics computed from the rank structure.
 
+## Documentation
+
+For more detailed documentation, see:
+
+- [Stable Documentation](https://statistical-network-analysis-with-Julia.github.io/ERGMRank.jl/stable/)
+- [Development Documentation](https://statistical-network-analysis-with-Julia.github.io/ERGMRank.jl/dev/)
+
+## References
+
+1. Krivitsky, P.N., Butts, C.T. (2017). Exponential-family random graph models for rank-order relational data. *Sociological Methodology*, 47(1), 68-112.
+
+2. Hunter, D.R., Handcock, M.S., Butts, C.T., Goodreau, S.M., Morris, M. (2008). ergm: A package to fit, simulate and diagnose exponential-family models for networks. *Journal of Statistical Software*, 24(3), 1-29.
+
 ## License
 
-MIT License
+MIT License - see [LICENSE](LICENSE) for details.

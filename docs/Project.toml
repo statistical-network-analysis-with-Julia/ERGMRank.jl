@@ -7,9 +7,9 @@ SNA = "b2c3d4e5-f6a7-8901-bcde-f23456789012"
 
 [sources]
 ERGMRank = {path = ".."}
-ERGM = {path = "../../ERGM"}
-Network = {path = "../../Network"}
-SNA = {path = "../../SNA"}
+ERGM = {path = "../../ERGM.jl"}
+Network = {path = "../../Network.jl"}
+SNA = {path = "../../SNA.jl"}
 
 [compat]
 Documenter = "1"

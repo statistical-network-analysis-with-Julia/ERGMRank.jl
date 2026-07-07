@@ -1,471 +1,436 @@
 """
-    ERGMRank.jl - ERGMs for Rank-Order Networks
+    ERGMRank.jl - ERGMs for Rank-Order Relational Data
 
-Extends ERGM to handle networks where each actor ranks others,
-using local structure-based terms appropriate for ordinal relational data.
+Exponential-family random graph models for networks whose edge values are
+ranks: each ego rank-orders all alters (Krivitsky & Butts 2017).
 
-In rank networks, actor i assigns ranks 1, 2, ..., k to a subset of alters,
-where lower rank indicates higher preference/importance.
+The sample space is the set of complete orderings of the alters by each
+ego, with the discrete-uniform `CompleteOrderReference` over orderings.
+Statistics follow the R `ergm.rank` package: higher rank values indicate
+higher standing (`y[i,j] > y[i,k]` means ego `i` ranks `j` over `k`).
 
 Port of the R ergm.rank package from the StatNet collection.
 """
 module ERGMRank
 
 using ERGM
-using Graphs
 using LinearAlgebra
-using Network
-using Optim
 using Random
 using Statistics
-using StatsBase
 
-# Rank-specific terms
-export RankEdges, RankMutual, RankTransitivity
-export RankNonconsensus, RankDeference
-export RankLocaltriangle, RankNodecov, RankAbsdiff
+import ERGM: name, compute
 
-# Reference measures
-export PlackettLuce, ThurstoneMosteller
-
-# Model types
+# Core types
 export RankNetwork, RankERGMModel, RankERGMResult
+export CompleteOrderReference
 
-# Estimation
-export ergm_rank, fit_rank_ergm
-
-# Simulation
-export simulate_rank_ergm
-
-# Utilities
+# Rank access and manipulation
+export get_rank, set_rank!, swap_ranks!, is_valid_ranking
 export as_rank_network, rank_matrix
 
+# Terms (matching R ergm.rank)
+export RankDeference, RankNonconformity, RankNodeICov
+export RankInconsistency, RankEdgeCov
+
+# Estimation and simulation
+export ergm_rank, fit_rank_ergm
+export simulate_rank_ergm
+
 # =============================================================================
-# Rank Network Data Structure
+# RankNetwork
 # =============================================================================
 
 """
-    RankNetwork{T}
+    RankNetwork
 
-A network where edges represent rankings.
+A network of complete rankings: each ego assigns every alter a distinct
+rank in `1:(n-1)`, with **greater values indicating higher standing**
+(`get_rank(rnet, i, j) > get_rank(rnet, i, k)` means ego `i` ranks `j`
+over `k`), following the R `ergm.rank` convention.
 
 # Fields
-- `network::Network{T}`: Underlying network structure
-- `ranks::Dict{Tuple{T,T}, Int}`: Rank assigned by i to j
-- `max_rank::Int`: Maximum rank value
+- `n::Int`: Number of actors
+- `ranks::Matrix{Int}`: `ranks[i, j]` is the rank ego `i` assigns alter
+  `j`; the diagonal is 0
 """
-struct RankNetwork{T}
-    network::Network{T}
-    ranks::Dict{Tuple{T,T}, Int}
-    max_rank::Int
+struct RankNetwork
+    n::Int
+    ranks::Matrix{Int}
 
-    function RankNetwork{T}(n::Int; max_rank::Int=n-1) where T
-        net = Network{T}(; n=n, directed=true)
-        new{T}(net, Dict{Tuple{T,T}, Int}(), max_rank)
+    function RankNetwork(ranks::Matrix{Int}; validate::Bool=true)
+        n = size(ranks, 1)
+        size(ranks, 2) == n || throw(ArgumentError("rank matrix must be square"))
+        if validate
+            msg = _ranking_violation(ranks)
+            isnothing(msg) || throw(ArgumentError(msg))
+        end
+        new(n, copy(ranks))
     end
 end
 
-RankNetwork(n::Int; kwargs...) = RankNetwork{Int}(n; kwargs...)
+"""
+    RankNetwork(n::Int)
 
-# Forward Graphs.jl interface
-Graphs.nv(rnet::RankNetwork) = nv(rnet.network)
-Graphs.ne(rnet::RankNetwork) = ne(rnet.network)
-Graphs.vertices(rnet::RankNetwork) = vertices(rnet.network)
-Graphs.edges(rnet::RankNetwork) = edges(rnet.network)
-Graphs.is_directed(::RankNetwork) = true
+Create a rank network with `n` actors in which every ego ranks the alters
+in index order.
+"""
+function RankNetwork(n::Int)
+    ranks = zeros(Int, n, n)
+    for i in 1:n
+        r = 0
+        for j in 1:n
+            i == j && continue
+            r += 1
+            ranks[i, j] = r
+        end
+    end
+    return RankNetwork(ranks; validate=false)
+end
+
+# Returns nothing when valid, or a description of the first violation
+function _ranking_violation(ranks::Matrix{Int})
+    n = size(ranks, 1)
+    for i in 1:n
+        ranks[i, i] == 0 ||
+            return "ego $i has a nonzero self-rank; the diagonal must be 0"
+        row = [ranks[i, j] for j in 1:n if j != i]
+        sort(row) == collect(1:(n-1)) ||
+            return "ego $i's ranks $(sort(row)) are not a permutation of 1:$(n-1); " *
+                   "each ego must assign each alter a distinct rank"
+    end
+    return nothing
+end
+
+"""
+    is_valid_ranking(rnet::RankNetwork) -> Bool
+
+Check that every ego's ranks form a permutation of `1:(n-1)` — the
+structural invariant of complete rank-order data.
+"""
+is_valid_ranking(rnet::RankNetwork) = isnothing(_ranking_violation(rnet.ranks))
+
+Base.copy(rnet::RankNetwork) = RankNetwork(copy(rnet.ranks); validate=false)
+
+nactors(rnet::RankNetwork) = rnet.n
+
+function Base.show(io::IO, rnet::RankNetwork)
+    print(io, "RankNetwork with $(rnet.n) actors ",
+          "(complete orderings of $(rnet.n - 1) alters per ego)")
+end
+
+"""
+    get_rank(rnet::RankNetwork, i, j) -> Int
+
+The rank ego `i` assigns alter `j` (greater = higher standing); 0 for
+`i == j`.
+"""
+get_rank(rnet::RankNetwork, i::Int, j::Int) = rnet.ranks[i, j]
 
 """
     set_rank!(rnet::RankNetwork, i, j, rank)
 
-Set the rank that actor i assigns to actor j.
+Set the rank ego `i` assigns alter `j`. This can transiently break the
+per-ego permutation invariant; prefer [`swap_ranks!`](@ref), which
+preserves it. Validate afterwards with [`is_valid_ranking`](@ref).
 """
-function set_rank!(rnet::RankNetwork{T}, i::T, j::T, rank::Int) where T
-    i == j && throw(ArgumentError("Cannot rank self"))
-    1 <= rank <= rnet.max_rank || throw(ArgumentError("Rank must be in 1:$(rnet.max_rank)"))
-
-    rnet.ranks[(i, j)] = rank
-    if !has_edge(rnet.network, i, j)
-        add_edge!(rnet.network, i, j)
-    end
+function set_rank!(rnet::RankNetwork, i::Int, j::Int, rank::Int)
+    i == j && throw(ArgumentError("cannot set a self-rank"))
+    1 <= rank <= rnet.n - 1 ||
+        throw(ArgumentError("rank must be in 1:$(rnet.n - 1)"))
+    rnet.ranks[i, j] = rank
     return rnet
 end
 
 """
-    get_rank(rnet::RankNetwork, i, j) -> Union{Int, Nothing}
+    swap_ranks!(rnet::RankNetwork, ego, j, k)
 
-Get the rank that actor i assigns to actor j.
+Swap the ranks ego assigns alters `j` and `k` (the AlterSwap move). This
+is the elementary move of the rank sample space: it always preserves the
+complete-ordering invariant.
 """
-function get_rank(rnet::RankNetwork{T}, i::T, j::T) where T
-    return get(rnet.ranks, (i, j), nothing)
-end
-
-"""
-    get_rankings_by(rnet::RankNetwork, i) -> Vector{Tuple{T, Int}}
-
-Get all rankings made by actor i, sorted by rank.
-"""
-function get_rankings_by(rnet::RankNetwork{T}, i::T) where T
-    rankings = Tuple{T, Int}[]
-    for ((src, dst), rank) in rnet.ranks
-        if src == i
-            push!(rankings, (dst, rank))
-        end
-    end
-    sort!(rankings, by=x -> x[2])
-    return rankings
-end
-
-"""
-    get_rankings_of(rnet::RankNetwork, j) -> Vector{Tuple{T, Int}}
-
-Get all rankings received by actor j.
-"""
-function get_rankings_of(rnet::RankNetwork{T}, j::T) where T
-    rankings = Tuple{T, Int}[]
-    for ((src, dst), rank) in rnet.ranks
-        if dst == j
-            push!(rankings, (src, rank))
-        end
-    end
-    return rankings
-end
-
-"""
-    rank_matrix(rnet::RankNetwork) -> Matrix{Union{Int, Missing}}
-
-Convert rank network to matrix form.
-Entry (i,j) is the rank i gives to j, or missing if not ranked.
-"""
-function rank_matrix(rnet::RankNetwork{T}) where T
-    n = nv(rnet)
-    mat = Matrix{Union{Int, Missing}}(missing, n, n)
-    for ((i, j), rank) in rnet.ranks
-        mat[i, j] = rank
-    end
-    return mat
-end
-
-"""
-    as_rank_network(mat::Matrix; max_rank=nothing) -> RankNetwork
-
-Convert a matrix of ranks to a RankNetwork.
-"""
-function as_rank_network(mat::Matrix{<:Union{Int, Missing, Nothing}};
-                         max_rank::Union{Int, Nothing}=nothing)
-    n = size(mat, 1)
-    size(mat, 2) == n || throw(ArgumentError("Matrix must be square"))
-
-    max_r = isnothing(max_rank) ? maximum(skipmissing(mat)) : max_rank
-    rnet = RankNetwork(n; max_rank=max_r)
-
-    for i in 1:n, j in 1:n
-        if !ismissing(mat[i, j]) && !isnothing(mat[i, j])
-            set_rank!(rnet, i, j, mat[i, j])
-        end
-    end
-
+function swap_ranks!(rnet::RankNetwork, ego::Int, j::Int, k::Int)
+    (ego == j || ego == k) && throw(ArgumentError("ego cannot swap its own rank"))
+    rnet.ranks[ego, j], rnet.ranks[ego, k] = rnet.ranks[ego, k], rnet.ranks[ego, j]
     return rnet
 end
 
-# =============================================================================
-# Reference Measures for Rank Data
-# =============================================================================
+"""
+    as_rank_network(mat::AbstractMatrix) -> RankNetwork
+
+Build a `RankNetwork` from a matrix of rank values (row `i` holds ego
+`i`'s ranks of the alters, greater = higher standing).
+"""
+as_rank_network(mat::AbstractMatrix) = RankNetwork(Matrix{Int}(mat))
 
 """
-    PlackettLuce
+    rank_matrix(rnet::RankNetwork) -> Matrix{Int}
 
-Plackett-Luce model for rankings - items ranked independently based on "worth".
+The matrix of rank values (a copy).
 """
-struct PlackettLuce
-    # Base model - can be extended with item-specific parameters
-end
-
-"""
-    ThurstoneMosteller
-
-Thurstone-Mosteller model - rankings based on latent normal utilities.
-"""
-struct ThurstoneMosteller
-    sigma::Float64
-    ThurstoneMosteller(σ::Float64=1.0) = new(σ)
-end
+rank_matrix(rnet::RankNetwork) = copy(rnet.ranks)
 
 # =============================================================================
-# Rank-Specific ERGM Terms
+# Reference measure
 # =============================================================================
 
 """
-    RankEdges <: AbstractERGMTerm
+    CompleteOrderReference
 
-Number of rankings made (density term for rank networks).
+The discrete-uniform reference measure over the complete orderings of the
+alters by each ego — the reference measure of `ergm.rank`. Under this
+reference every valid rank configuration has equal baseline weight, so it
+cancels out of all likelihood ratios; it is the *sample-space constraint*
+(each ego's ranks form a permutation) that carries the structure,
+maintained by the AlterSwap move.
 """
-struct RankEdges <: AbstractERGMTerm end
+struct CompleteOrderReference end
 
-name(::RankEdges) = "rank.edges"
-
-function compute(::RankEdges, rnet::RankNetwork)
-    return Float64(length(rnet.ranks))
-end
-
-function change_stat(::RankEdges, rnet::RankNetwork, i::Int, j::Int)
-    # Change when adding/removing a ranking
-    haskey(rnet.ranks, (i, j)) ? -1.0 : 1.0
-end
+# =============================================================================
+# Terms (statistics follow ergm.rank's wtchangestats_rank.c)
+# =============================================================================
 
 """
-    RankMutual <: AbstractERGMTerm
+    RankDeference <: AbstractERGMTerm
 
-Mutual high-ranking: both i and j rank each other in top k positions.
-
-# Fields
-- `cutoff::Int`: Top k positions to consider (default: 1, meaning top choice)
+Deference (aversion), `rank.deference` in ergm.rank: the number of ordered
+triples (ego `i`, deferred-to `l`, other `j`) such that `l` ranks `j` over
+`i` while `i` ranks `l` over `j`.
 """
-struct RankMutual <: AbstractERGMTerm
-    cutoff::Int
-    RankMutual(k::Int=1) = new(k)
+struct RankDeference <: AbstractERGMTerm end
+
+name(::RankDeference) = "rank.deference"
+
+function compute(::RankDeference, rnet::RankNetwork)
+    n = rnet.n
+    y = rnet.ranks
+    total = 0.0
+    for v1 in 1:n, v3 in 1:n
+        v3 == v1 && continue
+        for v2 in 1:n
+            (v2 == v1 || v2 == v3) && continue
+            if y[v3, v2] > y[v3, v1] && y[v1, v3] > y[v1, v2]
+                total += 1.0
+            end
+        end
+    end
+    return total
 end
 
-name(t::RankMutual) = "rank.mutual.$(t.cutoff)"
+"""
+    RankNonconformity(variant=:all) <: AbstractERGMTerm
 
-function compute(t::RankMutual, rnet::RankNetwork{T}) where T
-    count = 0
-    n = nv(rnet)
+Nonconformity, `rank.nonconformity` in ergm.rank.
 
-    for i in 1:n
-        for j in (i+1):n
-            rank_ij = get_rank(rnet, T(i), T(j))
-            rank_ji = get_rank(rnet, T(j), T(i))
+- `:all` — global nonconformity: over unordered actor pairs {i, j} and
+  ordered alter pairs (k, l), count comparisons on which i and j disagree
+  (`(y_ik > y_il) ≠ (y_jk > y_jl)`).
+- `:localAND` — local nonconformity (Krivitsky & Butts): ego i disagrees
+  with an actor l that i ranks over both j and k, counting cases where l
+  ranks j over k while i ranks k at least as high as j.
+"""
+struct RankNonconformity <: AbstractERGMTerm
+    variant::Symbol
 
-            if !isnothing(rank_ij) && !isnothing(rank_ji)
-                if rank_ij <= t.cutoff && rank_ji <= t.cutoff
-                    count += 1
+    function RankNonconformity(variant::Symbol=:all)
+        variant in (:all, :localAND) ||
+            throw(ArgumentError("variant must be :all or :localAND"))
+        new(variant)
+    end
+end
+
+name(t::RankNonconformity) =
+    t.variant == :all ? "rank.nonconformity" : "rank.nonconformity.localAND"
+
+function compute(t::RankNonconformity, rnet::RankNetwork)
+    n = rnet.n
+    y = rnet.ranks
+    total = 0.0
+
+    if t.variant == :all
+        for v1 in 1:n, v2 in 1:(v1-1)
+            for v3 in 1:n
+                (v3 == v1 || v3 == v2) && continue
+                for v4 in 1:n
+                    (v4 == v1 || v4 == v2 || v4 == v3) && continue
+                    if (y[v1, v3] > y[v1, v4]) != (y[v2, v3] > y[v2, v4])
+                        total += 1.0
+                    end
                 end
             end
         end
-    end
-
-    return Float64(count)
-end
-
-"""
-    RankTransitivity <: AbstractERGMTerm
-
-Transitive ranking: if i ranks j highly and j ranks k highly,
-then i tends to rank k highly.
-
-# Fields
-- `cutoff::Int`: Top k positions for "high" ranking
-"""
-struct RankTransitivity <: AbstractERGMTerm
-    cutoff::Int
-    RankTransitivity(k::Int=3) = new(k)
-end
-
-name(t::RankTransitivity) = "rank.transitivity.$(t.cutoff)"
-
-function compute(t::RankTransitivity, rnet::RankNetwork{T}) where T
-    count = 0
-    n = nv(rnet)
-
-    for i in 1:n, j in 1:n, k in 1:n
-        i == j || j == k || i == k || continue
-
-        rank_ij = get_rank(rnet, T(i), T(j))
-        rank_jk = get_rank(rnet, T(j), T(k))
-        rank_ik = get_rank(rnet, T(i), T(k))
-
-        if !isnothing(rank_ij) && !isnothing(rank_jk) && !isnothing(rank_ik)
-            if rank_ij <= t.cutoff && rank_jk <= t.cutoff && rank_ik <= t.cutoff
-                count += 1
-            end
-        end
-    end
-
-    return Float64(count)
-end
-
-"""
-    RankNonconsensus <: AbstractERGMTerm
-
-Measures disagreement in rankings: cases where i ranks j higher than k,
-but some other actor l ranks k higher than j.
-"""
-struct RankNonconsensus <: AbstractERGMTerm end
-
-name(::RankNonconsensus) = "rank.nonconsensus"
-
-function compute(::RankNonconsensus, rnet::RankNetwork{T}) where T
-    count = 0
-    n = nv(rnet)
-
-    for i in 1:n
-        rankings_i = get_rankings_by(rnet, T(i))
-        length(rankings_i) < 2 && continue
-
-        for (idx1, (j, rank_j)) in enumerate(rankings_i)
-            for (idx2, (k, rank_k)) in enumerate(rankings_i)
-                idx1 >= idx2 && continue
-
-                # i ranks j higher than k (lower rank number)
-                if rank_j < rank_k
-                    # Find any l who ranks k higher than j
-                    for l in 1:n
-                        l == i && continue
-                        rank_lj = get_rank(rnet, T(l), j)
-                        rank_lk = get_rank(rnet, T(l), k)
-
-                        if !isnothing(rank_lj) && !isnothing(rank_lk)
-                            if rank_lk < rank_lj  # l ranks k higher than j
-                                count += 1
-                            end
-                        end
+    else  # :localAND (v1=i, v2=j, v3=l, v4=k in Krivitsky & Butts)
+        for v1 in 1:n, v2 in 1:n
+            v2 == v1 && continue
+            for v3 in 1:n
+                (v3 == v1 || v3 == v2) && continue
+                y[v1, v3] > y[v1, v2] || continue
+                for v4 in 1:n
+                    (v4 == v1 || v4 == v2 || v4 == v3) && continue
+                    y[v1, v3] > y[v1, v4] || continue
+                    if y[v3, v2] > y[v3, v4] && y[v1, v2] <= y[v1, v4]
+                        total += 1.0
                     end
                 end
             end
         end
     end
 
-    return Float64(count)
-end
-
-"""
-    RankDeference <: AbstractERGMTerm
-
-Deference: tendency to rank those who rank you highly also highly.
-"""
-struct RankDeference <: AbstractERGMTerm
-    cutoff::Int
-    RankDeference(k::Int=3) = new(k)
-end
-
-name(t::RankDeference) = "rank.deference.$(t.cutoff)"
-
-function compute(t::RankDeference, rnet::RankNetwork{T}) where T
-    count = 0
-    n = nv(rnet)
-
-    for i in 1:n, j in 1:n
-        i == j && continue
-
-        rank_ij = get_rank(rnet, T(i), T(j))
-        rank_ji = get_rank(rnet, T(j), T(i))
-
-        if !isnothing(rank_ij) && !isnothing(rank_ji)
-            if rank_ji <= t.cutoff && rank_ij <= t.cutoff
-                count += 1
-            end
-        end
-    end
-
-    return Float64(count) / 2  # Each pair counted twice
-end
-
-"""
-    RankLocaltriangle <: AbstractERGMTerm
-
-Local ranking triangles within each actor's rankings.
-"""
-struct RankLocaltriangle <: AbstractERGMTerm end
-
-name(::RankLocaltriangle) = "rank.localtriangle"
-
-function compute(::RankLocaltriangle, rnet::RankNetwork{T}) where T
-    count = 0
-    n = nv(rnet)
-
-    for i in 1:n
-        rankings_i = get_rankings_by(rnet, T(i))
-        length(rankings_i) < 2 && continue
-
-        # For each pair that i ranks, check if they rank each other
-        for (idx1, (j, _)) in enumerate(rankings_i)
-            for (idx2, (k, _)) in enumerate(rankings_i)
-                idx1 >= idx2 && continue
-
-                # Check if j and k rank each other
-                if !isnothing(get_rank(rnet, j, k)) && !isnothing(get_rank(rnet, k, j))
-                    count += 1
-                end
-            end
-        end
-    end
-
-    return Float64(count)
-end
-
-"""
-    RankNodecov <: AbstractERGMTerm
-
-Rank-weighted node covariate effect.
-"""
-struct RankNodecov <: AbstractERGMTerm
-    attr::Symbol
-    RankNodecov(attr::Symbol) = new(attr)
-end
-
-name(t::RankNodecov) = "rank.nodecov.$(t.attr)"
-
-function compute(t::RankNodecov, rnet::RankNetwork)
-    attrs = get_vertex_attribute(rnet.network, t.attr)
-    isnothing(attrs) && return 0.0
-
-    total = 0.0
-    for ((i, j), rank) in rnet.ranks
-        # Weight by inverse rank (high rank = more important)
-        weight = 1.0 / rank
-        total += weight * (get(attrs, i, 0) + get(attrs, j, 0))
-    end
-
     return total
 end
 
 """
-    RankAbsdiff <: AbstractERGMTerm
+    RankNodeICov(x) <: AbstractERGMTerm
 
-Effect of absolute difference in node attribute on rankings.
+Attractiveness/popularity covariate, `rank.nodeicov` in ergm.rank: for
+each ego and each ordered alter pair (j, k) with j ranked over k, add
+`x[j] − x[k]`. A positive coefficient means high-covariate actors tend to
+be ranked higher.
+
+# Fields
+- `x::Vector{Float64}`: Actor-level covariate
+- `label::String`: Name for output (default "x")
 """
-struct RankAbsdiff <: AbstractERGMTerm
-    attr::Symbol
-    RankAbsdiff(attr::Symbol) = new(attr)
+struct RankNodeICov <: AbstractERGMTerm
+    x::Vector{Float64}
+    label::String
+
+    RankNodeICov(x::AbstractVector{<:Real}; label::String="x") =
+        new(Float64.(x), label)
 end
 
-name(t::RankAbsdiff) = "rank.absdiff.$(t.attr)"
+name(t::RankNodeICov) = "rank.nodeicov.$(t.label)"
 
-function compute(t::RankAbsdiff, rnet::RankNetwork)
-    attrs = get_vertex_attribute(rnet.network, t.attr)
-    isnothing(attrs) && return 0.0
-
+function compute(t::RankNodeICov, rnet::RankNetwork)
+    n = rnet.n
+    length(t.x) == n ||
+        throw(ArgumentError("covariate length $(length(t.x)) ≠ number of actors $n"))
+    y = rnet.ranks
     total = 0.0
-    for ((i, j), rank) in rnet.ranks
-        val_i = get(attrs, i, 0)
-        val_j = get(attrs, j, 0)
-        total += abs(val_i - val_j) / rank  # Weight by inverse rank
+    for v1 in 1:n, v2 in 1:n
+        v2 == v1 && continue
+        for v3 in 1:n
+            (v3 == v1 || v3 == v2) && continue
+            if y[v1, v2] > y[v1, v3]
+                total += t.x[v2] - t.x[v3]
+            end
+        end
     end
-
     return total
 end
 
+"""
+    RankInconsistency(ref) <: AbstractERGMTerm
+
+Inconsistency, `rank.inconsistency` in ergm.rank: the number of ego–alter
+pair comparisons on which the network disagrees with a reference ranking
+(`(y_ij > y_ik) ≠ (ref_ij > ref_ik)`).
+
+# Fields
+- `ref::Matrix{Int}`: Reference rank matrix (same convention)
+"""
+struct RankInconsistency <: AbstractERGMTerm
+    ref::Matrix{Int}
+end
+
+RankInconsistency(ref_net::RankNetwork) = RankInconsistency(rank_matrix(ref_net))
+
+name(::RankInconsistency) = "rank.inconsistency"
+
+function compute(t::RankInconsistency, rnet::RankNetwork)
+    n = rnet.n
+    size(t.ref) == (n, n) ||
+        throw(ArgumentError("reference matrix size $(size(t.ref)) ≠ ($n, $n)"))
+    y = rnet.ranks
+    r = t.ref
+    total = 0.0
+    for v1 in 1:n, v2 in 1:n
+        v2 == v1 && continue
+        for v3 in 1:n
+            (v3 == v1 || v3 == v2) && continue
+            if (y[v1, v2] > y[v1, v3]) != (r[v1, v2] > r[v1, v3])
+                total += 1.0
+            end
+        end
+    end
+    return total
+end
+
+"""
+    RankEdgeCov(cov) <: AbstractERGMTerm
+
+Dyadic covariate, `rank.edgecov` in ergm.rank: for each ego and ordered
+alter pair (j, k) with j ranked over k, add `cov[i, j] − cov[i, k]`.
+
+# Fields
+- `cov::Matrix{Float64}`: Dyadic covariate matrix
+- `label::String`: Name for output
+"""
+struct RankEdgeCov <: AbstractERGMTerm
+    cov::Matrix{Float64}
+    label::String
+
+    RankEdgeCov(cov::AbstractMatrix{<:Real}; label::String="cov") =
+        new(Float64.(cov), label)
+end
+
+name(t::RankEdgeCov) = "rank.edgecov.$(t.label)"
+
+function compute(t::RankEdgeCov, rnet::RankNetwork)
+    n = rnet.n
+    size(t.cov) == (n, n) ||
+        throw(ArgumentError("covariate matrix size $(size(t.cov)) ≠ ($n, $n)"))
+    y = rnet.ranks
+    total = 0.0
+    for v1 in 1:n, v2 in 1:n
+        v2 == v1 && continue
+        for v3 in 1:n
+            (v3 == v1 || v3 == v2) && continue
+            if y[v1, v2] > y[v1, v3]
+                total += t.cov[v1, v2] - t.cov[v1, v3]
+            end
+        end
+    end
+    return total
+end
+
+# All-terms statistic vector
+compute_all_stats(terms, rnet::RankNetwork) =
+    [compute(term, rnet) for term in terms]
+
+# Change in the statistic vector from swapping ego's ranks of j and k
+# (generic brute-force evaluation; swaps in place and restores)
+function _swap_delta(terms, rnet::RankNetwork, ego::Int, j::Int, k::Int)
+    before = compute_all_stats(terms, rnet)
+    swap_ranks!(rnet, ego, j, k)
+    after = compute_all_stats(terms, rnet)
+    swap_ranks!(rnet, ego, j, k)
+    return after .- before
+end
+
 # =============================================================================
-# Model and Estimation
+# Model and estimation
 # =============================================================================
 
 """
-    RankERGMModel{T}
+    RankERGMModel
 
-ERGM model for rank networks.
+Rank-order ERGM specification: terms plus the observed `RankNetwork`
+under the `CompleteOrderReference`.
 """
-struct RankERGMModel{T}
+struct RankERGMModel
     terms::Vector{AbstractERGMTerm}
-    network::RankNetwork{T}
+    network::RankNetwork
+    reference::CompleteOrderReference
 end
 
 """
     RankERGMResult
 
-Results from fitting a rank ERGM.
+Results from fitting a rank-order ERGM. `loglik` is the maximized
+swap-based pseudo-log-likelihood (see [`ergm_rank`](@ref)).
 """
-struct RankERGMResult{T}
-    model::RankERGMModel{T}
+struct RankERGMResult
+    model::RankERGMModel
     coefficients::Vector{Float64}
     std_errors::Vector{Float64}
     loglik::Float64
@@ -473,14 +438,15 @@ struct RankERGMResult{T}
 end
 
 function Base.show(io::IO, result::RankERGMResult)
-    println(io, "Rank ERGM Results")
-    println(io, "=================")
-    println(io, "Log-likelihood: $(round(result.loglik, digits=4))")
+    println(io, "Rank-Order ERGM Results")
+    println(io, "=======================")
+    println(io, "Reference: CompleteOrder")
+    println(io, "Pseudo-log-likelihood: $(round(result.loglik, digits=4))")
     println(io, "Converged: $(result.converged)")
     println(io)
     println(io, "Coefficients:")
     for (i, term) in enumerate(result.model.terms)
-        println(io, "  $(rpad(name(term), 25)) $(lpad(round(result.coefficients[i], digits=4), 10)) " *
+        println(io, "  $(rpad(name(term), 28)) $(lpad(round(result.coefficients[i], digits=4), 10)) " *
                     "(SE: $(round(result.std_errors[i], digits=4)))")
     end
 end
@@ -488,105 +454,162 @@ end
 """
     ergm_rank(rnet::RankNetwork, terms; kwargs...) -> RankERGMResult
 
-Fit an ERGM for rank-order networks.
+Fit a rank-order ERGM by **swap-based maximum pseudo-likelihood**: for
+each ego `i` and each unordered alter pair {j, k}, the conditional
+probability of the observed relative order of j and k given the rest of
+the rankings is logistic in `θ'[g(y) − g(y with j,k swapped)]`. The
+product of these conditionals is maximized by Newton-Raphson with
+step-halving.
+
+This is the natural rank analogue of dyadwise MPLE (the AlterSwap move
+takes the role of the edge toggle). It is a consistent, fast approximation
+to the MCMC MLE of `ergm.rank`; like all pseudo-likelihoods it understates
+uncertainty for strongly dependent models.
+
+# Keyword Arguments
+- `maxiter::Int=100`, `tol::Float64=1e-8`
 """
-function ergm_rank(rnet::RankNetwork{T}, terms::Vector{<:AbstractERGMTerm};
-                   method::Symbol=:mple,
-                   maxiter::Int=100) where T
+function ergm_rank(rnet::RankNetwork, terms::Vector{<:AbstractERGMTerm};
+                   maxiter::Int=100, tol::Float64=1e-8)
+    is_valid_ranking(rnet) ||
+        throw(ArgumentError("network is not a valid complete ranking: " *
+                            something(_ranking_violation(rnet.ranks), "")))
 
-    model = RankERGMModel{T}(terms, rnet)
+    model = RankERGMModel(collect(AbstractERGMTerm, terms), copy(rnet),
+                          CompleteOrderReference())
+    n = rnet.n
+    p = length(terms)
+    work = copy(rnet)
 
-    if method == :mple
-        return rank_mple(model; maxiter=maxiter)
-    else
-        throw(ArgumentError("Unknown method: $method"))
-    end
-end
-
-fit_rank_ergm = ergm_rank
-
-"""
-    rank_mple(model::RankERGMModel; kwargs...) -> RankERGMResult
-
-MPLE for rank ERGM.
-"""
-function rank_mple(model::RankERGMModel{T}; maxiter::Int=100, tol::Float64=1e-6) where T
-    n_terms = length(model.terms)
-    coef = zeros(n_terms)
-
-    # Compute observed statistics
-    obs_stats = [compute(term, model.network) for term in model.terms]
-
-    # Simple gradient descent (placeholder for full implementation)
-    for iter in 1:maxiter
-        grad = zeros(n_terms)
-
-        # Compute gradient based on observed vs expected statistics
-        for (i, term) in enumerate(model.terms)
-            grad[i] = obs_stats[i] - compute(term, model.network) * exp(-coef[i])
-        end
-
-        # Update
-        coef .+= 0.01 * grad
-
-        if maximum(abs.(grad)) < tol
-            se = fill(0.1, n_terms)  # Placeholder
-            return RankERGMResult{T}(model, coef, se, NaN, true)
+    # Design vectors: for each (ego, {j,k}) the difference
+    # d = g(y_observed) − g(y_swapped)
+    D = Vector{Vector{Float64}}()
+    for ego in 1:n
+        alters = [v for v in 1:n if v != ego]
+        for a in 1:length(alters), b in (a+1):length(alters)
+            push!(D, -_swap_delta(model.terms, work, ego, alters[a], alters[b]))
         end
     end
 
-    se = fill(NaN, n_terms)
-    return RankERGMResult{T}(model, coef, se, NaN, false)
+    θ = zeros(p)
+
+    function derivatives(β)
+        ll = 0.0
+        grad = zeros(p)
+        hess = zeros(p, p)
+        for d in D
+            η = dot(β, d)
+            pr = 1.0 / (1.0 + exp(-η))       # P(observed order | rest)
+            # log pr computed stably
+            ll += η < 0 ? η - log1p(exp(η)) : -log1p(exp(-η))
+            grad .+= d .* (1.0 - pr)
+            hess .-= (pr * (1.0 - pr)) .* (d * d')
+        end
+        return ll, grad, hess
+    end
+
+    ll, grad, hess = derivatives(θ)
+    converged = false
+
+    for _ in 1:maxiter
+        step = try
+            -hess \ grad
+        catch
+            break
+        end
+
+        stepsize = 1.0
+        ll_new, grad_new, hess_new = ll, grad, hess
+        for _ in 1:10
+            ll_new, grad_new, hess_new = derivatives(θ .+ stepsize .* step)
+            ll_new >= ll && break
+            stepsize /= 2
+        end
+
+        θ .+= stepsize .* step
+        ll_change = abs(ll_new - ll)
+        ll, grad, hess = ll_new, grad_new, hess_new
+
+        if ll_change < tol && norm(grad) < sqrt(tol)
+            converged = true
+            break
+        end
+    end
+
+    se = try
+        sqrt.(abs.(diag(pinv(-hess))))
+    catch
+        fill(NaN, p)
+    end
+
+    return RankERGMResult(model, θ, se, ll, converged)
 end
+
+const fit_rank_ergm = ergm_rank
 
 # =============================================================================
 # Simulation
 # =============================================================================
 
 """
-    simulate_rank_ergm(n::Int, terms, coef; kwargs...) -> RankNetwork
+    simulate_rank_ergm(rnet, terms, θ; n_sim=1, burnin=500, interval=50,
+                       rng=Random.default_rng()) -> Vector{RankNetwork}
 
-Simulate a rank network from an ERGM.
+Simulate rank networks from a rank-order ERGM by Metropolis sampling with
+the **AlterSwap** proposal (as in ergm.rank): pick a random ego and two
+random alters, propose swapping their ranks, and accept with probability
+`min(1, exp(θ'Δg))`. Every state visited is a valid complete ranking, and
+the chain targets `P(y) ∝ exp(θ'g(y))` on the complete-ordering space
+(the proposal is symmetric, so the CompleteOrder reference cancels).
 """
-function simulate_rank_ergm(n::Int, terms::Vector{<:AbstractERGMTerm},
-                            coef::Vector{Float64};
-                            max_rank::Int=n-1,
-                            burnin::Int=1000)
-    rnet = RankNetwork(n; max_rank=max_rank)
+function simulate_rank_ergm(rnet::RankNetwork, terms::Vector{<:AbstractERGMTerm},
+                            θ::Vector{Float64};
+                            n_sim::Int=1,
+                            burnin::Int=500,
+                            interval::Int=50,
+                            rng::Random.AbstractRNG=Random.default_rng())
+    is_valid_ranking(rnet) ||
+        throw(ArgumentError("starting network is not a valid complete ranking"))
+    length(θ) == length(terms) ||
+        throw(ArgumentError("θ must have one coefficient per term"))
 
-    # Initialize with random rankings
-    for i in 1:n
-        n_rankings = rand(1:max_rank)
-        others = setdiff(1:n, i)
-        ranked = sample(others, min(n_rankings, length(others)); replace=false)
-        for (r, j) in enumerate(ranked)
-            set_rank!(rnet, i, j, r)
+    current = copy(rnet)
+    n = current.n
+    n >= 3 || throw(ArgumentError("need at least 3 actors to swap alters"))
+    draws = RankNetwork[]
+
+    for step in 1:(burnin + n_sim * interval)
+        ego = rand(rng, 1:n)
+        j = rand(rng, 1:n)
+        while j == ego
+            j = rand(rng, 1:n)
+        end
+        k = rand(rng, 1:n)
+        while k == ego || k == j
+            k = rand(rng, 1:n)
+        end
+
+        delta = _swap_delta(terms, current, ego, j, k)
+        if log(rand(rng)) < dot(θ, delta)
+            swap_ranks!(current, ego, j, k)
+        end
+
+        if step > burnin && (step - burnin) % interval == 0
+            push!(draws, copy(current))
         end
     end
 
-    # MCMC updates
-    for _ in 1:burnin
-        # Pick random actor and alter
-        i = rand(1:n)
-        j = rand(setdiff(1:n, i))
+    return draws
+end
 
-        # Propose change (add, remove, or modify rank)
-        current_rank = get_rank(rnet, i, j)
+"""
+    simulate_rank_ergm(result::RankERGMResult; kwargs...) -> Vector{RankNetwork}
 
-        # Compute acceptance probability based on change statistics
-        # (simplified version)
-        if rand() < 0.5
-            # Accept proposal
-            if isnothing(current_rank)
-                set_rank!(rnet, i, j, rand(1:max_rank))
-            else
-                delete!(rnet.ranks, (i, j))
-                rem_edge!(rnet.network, i, j)
-            end
-        end
-    end
-
-    return rnet
+Simulate from a fitted rank-order ERGM.
+"""
+function simulate_rank_ergm(result::RankERGMResult; kwargs...)
+    return simulate_rank_ergm(result.model.network, result.model.terms,
+                              result.coefficients; kwargs...)
 end
 
 end # module

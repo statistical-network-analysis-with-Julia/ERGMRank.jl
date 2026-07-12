@@ -13,12 +13,19 @@ Port of the R ergm.rank package from the StatNet collection.
 """
 module ERGMRank
 
+using Distributions
 using ERGM
 using LinearAlgebra
 using Random
 using Statistics
 
 import ERGM: name, compute
+# Shared presentation infrastructure (Network.jl): the ONE `gof` generic all
+# model packages extend, plus the common coefficient-table printer and
+# GOF containers
+import Network: gof, print_coeftable, GOFStatistic, GOFResult
+import StatsAPI
+import StatsAPI: coef, stderror, vcov, loglikelihood, nobs, dof
 
 # Core types
 export RankNetwork, RankERGMModel, RankERGMResult
@@ -33,8 +40,15 @@ export RankDeference, RankNonconformity, RankNodeICov
 export RankInconsistency, RankEdgeCov
 
 # Estimation and simulation
-export ergm_rank, fit_rank_ergm
+export fit_ergm_rank, ergm_rank, fit_rank_ergm
 export simulate_rank_ergm
+
+# Goodness of fit (method of the shared Network.jl `gof` generic)
+export gof
+
+# StatsAPI methods (re-exported so `coef(fit)` etc. work with just
+# `using ERGMRank`)
+export coef, stderror, vcov, loglikelihood, nobs, dof
 
 # =============================================================================
 # RankNetwork
@@ -427,15 +441,22 @@ end
     RankERGMResult
 
 Results from fitting a rank-order ERGM. `loglik` is the maximized
-swap-based pseudo-log-likelihood (see [`ergm_rank`](@ref)).
+swap-based pseudo-log-likelihood (see [`ergm_rank`](@ref)); `vcov` is the
+inverse negative Hessian of the pseudo-log-likelihood at the optimum.
 """
 struct RankERGMResult
     model::RankERGMModel
     coefficients::Vector{Float64}
     std_errors::Vector{Float64}
+    vcov::Matrix{Float64}
     loglik::Float64
     converged::Bool
 end
+
+# Two-sided normal p-values via the complementary CDF (the naive
+# 2(1 − cdf) form underflows to exactly 0 beyond |z| ≈ 8.3); NaN standard
+# errors give NaN p-values, which the shared printer renders as "NaN"
+_z_pvalues(z::AbstractVector{Float64}) = 2 .* ccdf.(Normal(), abs.(z))
 
 function Base.show(io::IO, result::RankERGMResult)
     println(io, "Rank-Order ERGM Results")
@@ -444,15 +465,28 @@ function Base.show(io::IO, result::RankERGMResult)
     println(io, "Pseudo-log-likelihood: $(round(result.loglik, digits=4))")
     println(io, "Converged: $(result.converged)")
     println(io)
-    println(io, "Coefficients:")
-    for (i, term) in enumerate(result.model.terms)
-        println(io, "  $(rpad(name(term), 28)) $(lpad(round(result.coefficients[i], digits=4), 10)) " *
-                    "(SE: $(round(result.std_errors[i], digits=4)))")
-    end
+    z = result.coefficients ./ result.std_errors
+    print_coeftable(io, [name(term) for term in result.model.terms],
+                    result.coefficients, result.std_errors, _z_pvalues(z);
+                    z_values=z)
 end
 
+# StatsAPI interface: methods on the shared statistics generics, so results
+# interoperate with StatsBase/GLM-style tooling (`coef(fit)`, `vcov(fit)`, ...)
+
+# Number of pseudo-likelihood contributions: one per (ego, unordered alter
+# pair) conditional
+_n_comparisons(rnet::RankNetwork) = rnet.n * (rnet.n - 1) * (rnet.n - 2) ÷ 2
+
+StatsAPI.coef(result::RankERGMResult) = result.coefficients
+StatsAPI.stderror(result::RankERGMResult) = result.std_errors
+StatsAPI.vcov(result::RankERGMResult) = result.vcov
+StatsAPI.loglikelihood(result::RankERGMResult) = result.loglik
+StatsAPI.nobs(result::RankERGMResult) = _n_comparisons(result.model.network)
+StatsAPI.dof(result::RankERGMResult) = length(result.coefficients)
+
 """
-    ergm_rank(rnet::RankNetwork, terms; kwargs...) -> RankERGMResult
+    fit_ergm_rank(rnet::RankNetwork, terms; kwargs...) -> RankERGMResult
 
 Fit a rank-order ERGM by **swap-based maximum pseudo-likelihood**: for
 each ego `i` and each unordered alter pair {j, k}, the conditional
@@ -466,11 +500,17 @@ takes the role of the edge toggle). It is a consistent, fast approximation
 to the MCMC MLE of `ergm.rank`; like all pseudo-likelihoods it understates
 uncertainty for strongly dependent models.
 
+The pseudo-log-likelihood is maximized with the shared
+[`ERGM.newton_fit`](@ref) Newton–Raphson-with-step-halving optimizer.
+
+[`ergm_rank`](@ref) is the R-faithful alias (matching the `ergm.rank`
+package); `fit_rank_ergm` is a legacy alias.
+
 # Keyword Arguments
-- `maxiter::Int=100`, `tol::Float64=1e-8`
+- `maxiter::Int=100`, `tol::Float64=1e-8` (passed to `newton_fit`)
 """
-function ergm_rank(rnet::RankNetwork, terms::Vector{<:AbstractERGMTerm};
-                   maxiter::Int=100, tol::Float64=1e-8)
+function fit_ergm_rank(rnet::RankNetwork, terms::Vector{<:AbstractERGMTerm};
+                       maxiter::Int=100, tol::Float64=1e-8)
     is_valid_ranking(rnet) ||
         throw(ArgumentError("network is not a valid complete ranking: " *
                             something(_ranking_violation(rnet.ranks), "")))
@@ -491,8 +531,6 @@ function ergm_rank(rnet::RankNetwork, terms::Vector{<:AbstractERGMTerm};
         end
     end
 
-    θ = zeros(p)
-
     function derivatives(β)
         ll = 0.0
         grad = zeros(p)
@@ -508,44 +546,27 @@ function ergm_rank(rnet::RankNetwork, terms::Vector{<:AbstractERGMTerm};
         return ll, grad, hess
     end
 
-    ll, grad, hess = derivatives(θ)
-    converged = false
+    # Maximize with the shared Newton-with-step-halving optimizer
+    fit = newton_fit(derivatives, zeros(p); maxiter=maxiter, tol=tol)
 
-    for _ in 1:maxiter
-        step = try
-            -hess \ grad
-        catch
-            break
-        end
-
-        stepsize = 1.0
-        ll_new, grad_new, hess_new = ll, grad, hess
-        for _ in 1:10
-            ll_new, grad_new, hess_new = derivatives(θ .+ stepsize .* step)
-            ll_new >= ll && break
-            stepsize /= 2
-        end
-
-        θ .+= stepsize .* step
-        ll_change = abs(ll_new - ll)
-        ll, grad, hess = ll_new, grad_new, hess_new
-
-        if ll_change < tol && norm(grad) < sqrt(tol)
-            converged = true
-            break
-        end
-    end
-
-    se = try
-        sqrt.(abs.(diag(pinv(-hess))))
-    catch
-        fill(NaN, p)
-    end
-
-    return RankERGMResult(model, θ, se, ll, converged)
+    return RankERGMResult(model, fit.θ, fit.se, fit.vcov, fit.loglik,
+                          fit.converged)
 end
 
-const fit_rank_ergm = ergm_rank
+"""
+    ergm_rank(rnet::RankNetwork, terms; kwargs...) -> RankERGMResult
+
+R-faithful alias for [`fit_ergm_rank`](@ref) (the same function), matching
+the R `ergm.rank` package name.
+"""
+const ergm_rank = fit_ergm_rank
+
+"""
+    fit_rank_ergm(rnet::RankNetwork, terms; kwargs...) -> RankERGMResult
+
+Alias for [`fit_ergm_rank`](@ref), kept for backward compatibility.
+"""
+const fit_rank_ergm = fit_ergm_rank
 
 # =============================================================================
 # Simulation
@@ -610,6 +631,42 @@ Simulate from a fitted rank-order ERGM.
 function simulate_rank_ergm(result::RankERGMResult; kwargs...)
     return simulate_rank_ergm(result.model.network, result.model.terms,
                               result.coefficients; kwargs...)
+end
+
+# =============================================================================
+# Goodness of fit
+# =============================================================================
+
+"""
+    gof(result::RankERGMResult; n_sim=100, burnin=500, interval=50,
+        rng=Random.default_rng()) -> GOFResult
+
+Goodness-of-fit assessment of a fitted rank-order ERGM: rank networks are
+simulated from the fitted model with [`simulate_rank_ergm`](@ref) (AlterSwap
+Metropolis sampling) and the observed model statistics are compared with
+their simulated distributions.
+
+This is a method of the shared `Network.gof` generic; it returns the shared
+`Network.GOFResult` (observed value, simulation envelope, and two-sided
+Monte-Carlo p-value per statistic).
+
+# Keyword Arguments
+- `n_sim::Int=100`: Number of simulated rank networks
+- `burnin`, `interval`, `rng`: passed to [`simulate_rank_ergm`](@ref)
+"""
+function gof(result::RankERGMResult; n_sim::Int=100, burnin::Int=500,
+             interval::Int=50, rng::Random.AbstractRNG=Random.default_rng())
+    rnet = result.model.network
+    terms = result.model.terms
+    sims = simulate_rank_ergm(result; n_sim=n_sim, burnin=burnin,
+                              interval=interval, rng=rng)
+
+    obs_stats = [compute(term, rnet) for term in terms]
+    sim_stats = [compute(term, s) for s in sims, term in terms]
+    stats = GOFStatistic("model statistics", [name(term) for term in terms],
+                         obs_stats, sim_stats)
+
+    return GOFResult([stats]; model="Rank-Order ERGM")
 end
 
 end # module

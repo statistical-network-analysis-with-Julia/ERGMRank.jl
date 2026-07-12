@@ -58,6 +58,7 @@ fixtures (see `test/runtests.jl`):
 
 ```julia
 using ERGMRank
+using ERGM: compute  # generic statistic evaluator shared with ERGM.jl
 
 # Rank matrix: row i holds ego i's ranks (greater = higher standing)
 m = [0 3 2 1;

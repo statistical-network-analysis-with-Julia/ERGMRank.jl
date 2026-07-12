@@ -1,5 +1,6 @@
 using ERGMRank
 using ERGM
+using Network
 using Random
 using Statistics
 using Test
@@ -142,6 +143,20 @@ end
         @test result.coefficients[1] ≈ θ_true atol = 0.12
     end
 
+    @testset "StatsAPI accessors" begin
+        rnet = r_test_network()
+        result = ergm_rank(rnet, [RankDeference(), RankNonconformity()])
+        @test coef(result) == result.coefficients
+        @test stderror(result) == result.std_errors
+        @test vcov(result) == result.vcov
+        @test size(vcov(result)) == (2, 2)
+        @test all(stderror(result) .≈
+                  sqrt.(abs.([vcov(result)[k, k] for k in 1:2])))
+        @test loglikelihood(result) == result.loglik
+        @test nobs(result) == 4 * 3 * 2 ÷ 2  # ego × unordered alter pairs
+        @test dof(result) == 2
+    end
+
     @testset "Estimator basics" begin
         rnet = r_test_network()
         result = ergm_rank(rnet, [RankDeference()])
@@ -153,10 +168,45 @@ end
         @test result.loglik < 0
 
         @test fit_rank_ergm === ergm_rank
+        @test fit_ergm_rank === ergm_rank
 
         # Invalid input rejected
         bad = RankNetwork(4)
         set_rank!(bad, 1, 2, bad.ranks[1, 3])  # duplicate
         @test_throws ArgumentError ergm_rank(bad, [RankDeference()])
+    end
+
+    @testset "show renders the shared coefficient table" begin
+        rnet = r_test_network()
+        result = fit_ergm_rank(rnet, [RankDeference(), RankNonconformity()])
+        out = sprint(show, result)
+        @test occursin("Rank-Order ERGM Results", out)
+        @test occursin("Estimate", out)
+        @test occursin("Pr(>|z|)", out)
+        @test occursin("Signif. codes", out)
+        @test occursin("rank.deference", out)
+        @test occursin("rank.nonconformity", out)
+    end
+
+    @testset "gof extends the shared Network.gof generic" begin
+        # One generic across the ecosystem: the method is added to
+        # Network.gof, not a package-local function
+        @test ERGMRank.gof === Network.gof
+
+        rnet = r_test_network()
+        result = fit_ergm_rank(rnet, [RankDeference()])
+        g = ERGMRank.gof(result; n_sim=10, burnin=50, interval=5,
+                         rng=Random.Xoshiro(12))
+        @test g isa Network.GOFResult
+        @test Network.n_simulations(g) == 10
+        @test length(g.statistics) == 1
+        @test g.statistics[1].name == "model statistics"
+        @test g.statistics[1].labels == ["rank.deference"]
+        @test g.statistics[1].observed == [compute(RankDeference(), rnet)]
+        @test all(p -> 0 < p <= 1, g.statistics[1].p_values)
+        # Formatted display renders the shared GOF table
+        out = sprint(show, g)
+        @test occursin("Goodness-of-fit assessment: Rank-Order ERGM", out)
+        @test occursin("MC p-value", out)
     end
 end

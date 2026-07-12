@@ -9,6 +9,7 @@ higher standing, and each row's off-diagonal entries a permutation of
 
 ```julia
 using ERGMRank
+using ERGM: compute  # generic statistic evaluator shared with ERGM.jl
 
 m = [0 3 2 1;
      3 0 1 2;

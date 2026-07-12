@@ -14,8 +14,9 @@ P(\text{observed order} \mid \text{rest}) =
 
 where ``y^{(i:j\leftrightarrow k)}`` is the network with ego ``i``'s ranks
 of ``j`` and ``k`` swapped. The product of these conditionals is maximized
-by Newton-Raphson with step-halving; standard errors come from the inverse
-observed information of the pseudo-likelihood.
+with ERGM.jl's shared `newton_fit` optimizer (Newton-Raphson with
+step-halving); standard errors come from the inverse observed information
+of the pseudo-likelihood.
 
 This is the rank analogue of dyadwise MPLE — the AlterSwap move plays the
 role of the edge toggle. It is fast and consistent, but like every

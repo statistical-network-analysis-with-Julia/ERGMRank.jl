@@ -5,17 +5,24 @@ authors = ["Statistical Network Analysis with Julia"]
 
 [deps]
 Combinatorics = "861a8166-3701-5b0c-9a16-15d98fcdc6aa"
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 ERGM = "d623cd87-b018-4e2a-bf53-b77ebcdc9da2"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Network = "027a387e-e55f-4537-a155-5037e5a23bdb"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+StatsAPI = "82ae8749-77ed-4fe6-ae5f-f523153014b0"
 
 [sources]
 ERGM = {path = "../ERGM.jl"}
+Network = {path = "../Network.jl"}
 
 [compat]
 Combinatorics = "1.1.0"
+Distributions = "0.25"
 ERGM = "0.1"
+Network = "0.1"
+StatsAPI = "1.7"
 julia = "1.12"
 
 [extras]

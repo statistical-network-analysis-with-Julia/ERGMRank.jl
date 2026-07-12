@@ -7,9 +7,9 @@ SNA = "199dfc94-006f-42e6-80fa-49ca4fc5f549"
 
 [sources]
 ERGMRank = {path = ".."}
-ERGM = {url = "https://github.com/statistical-network-analysis-with-Julia/ERGM.jl.git"}
-Network = {url = "https://github.com/statistical-network-analysis-with-Julia/Network.jl.git"}
-SNA = {url = "https://github.com/statistical-network-analysis-with-Julia/SNA.jl.git"}
+ERGM = {path = "../../ERGM.jl"}
+Network = {path = "../../Network.jl"}
+SNA = {path = "../../SNA.jl"}
 
 [compat]
 Documenter = "1"

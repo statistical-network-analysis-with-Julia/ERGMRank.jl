@@ -1,5 +1,13 @@
 # Types
 
+## Module
+
+```@docs
+ERGMRank
+```
+
+## Core types
+
 ```@docs
 RankNetwork
 CompleteOrderReference

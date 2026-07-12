@@ -500,11 +500,11 @@ takes the role of the edge toggle). It is a consistent, fast approximation
 to the MCMC MLE of `ergm.rank`; like all pseudo-likelihoods it understates
 uncertainty for strongly dependent models.
 
-The pseudo-log-likelihood is maximized with the shared
-[`ERGM.newton_fit`](@ref) Newton–Raphson-with-step-halving optimizer.
+The pseudo-log-likelihood is maximized with the shared `ERGM.newton_fit`
+Newton–Raphson-with-step-halving optimizer.
 
 [`ergm_rank`](@ref) is the R-faithful alias (matching the `ergm.rank`
-package); `fit_rank_ergm` is a legacy alias.
+package); [`fit_rank_ergm`](@ref) is a legacy alias.
 
 # Keyword Arguments
 - `maxiter::Int=100`, `tol::Float64=1e-8` (passed to `newton_fit`)

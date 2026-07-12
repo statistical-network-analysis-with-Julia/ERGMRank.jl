@@ -15,9 +15,11 @@ rank-order data. It is validated at construction and can be re-checked
 with [`is_valid_ranking`](@ref) at any time.
 
 ```julia
+using ERGMRank
+
 rnet = RankNetwork(5)          # index-order rankings
+m = rank_matrix(rnet)          # to a matrix (copy)
 rnet = as_rank_network(m)      # from a rank matrix (validated)
-rank_matrix(rnet)              # back to a matrix (copy)
 ```
 
 ## Modifying rankings
@@ -35,8 +37,12 @@ invariant — use it only when rebuilding a full ranking, and validate
 afterwards:
 
 ```julia
-set_rank!(rnet, 1, 2, 4)
-is_valid_ranking(rnet) || error("fix the ranking before modeling")
+old = get_rank(rnet, 1, 2)
+set_rank!(rnet, 1, 2, 4)         # may transiently duplicate a rank in row 1
+if !is_valid_ranking(rnet)
+    set_rank!(rnet, 1, 2, old)   # restore the permutation
+end
+is_valid_ranking(rnet)           # true again
 ```
 
 `ergm_rank` and `simulate_rank_ergm` reject invalid rankings.

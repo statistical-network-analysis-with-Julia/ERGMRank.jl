@@ -24,6 +24,16 @@ pseudo-likelihood it understates uncertainty when dependence is strong;
 treat the standard errors as approximate.
 
 ```julia
+using ERGMRank, Random
+
+rng = Xoshiro(1)
+rnet = RankNetwork(8)              # index-order rankings
+for _ in 1:60                      # randomize with AlterSwap moves
+    ego, j, k = rand(rng, 1:8), rand(rng, 1:8), rand(rng, 1:8)
+    (j == ego || k == ego || j == k) && continue
+    swap_ranks!(rnet, ego, j, k)
+end
+
 result = ergm_rank(rnet, [RankDeference(), RankNonconformity(:localAND)])
 result.coefficients
 result.loglik        # maximized pseudo-log-likelihood
@@ -41,6 +51,9 @@ uniform reference cancels, and every visited state is a valid complete
 ranking.
 
 ```julia
+terms = [RankDeference(), RankNonconformity(:localAND)]
+θ = result.coefficients
+
 draws = simulate_rank_ergm(rnet, terms, θ;
                            n_sim = 200, burnin = 2000, interval = 50)
 ```
@@ -51,6 +64,9 @@ Compare observed statistics to their simulated distribution at the fitted
 coefficients:
 
 ```julia
+using ERGM: compute
+using Statistics: mean
+
 result = ergm_rank(rnet, terms)
 draws = simulate_rank_ergm(result; n_sim = 200)
 sim_stats = [compute(terms[1], d) for d in draws]

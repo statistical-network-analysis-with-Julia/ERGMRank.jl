@@ -14,6 +14,8 @@ Throughout, ``y_{ij}`` is the rank ego ``i`` assigns alter ``j``
 ``l`` ranks ``j`` over ``i``, while ``i`` ranks ``l`` over ``j``.
 
 ```julia
+using ERGMRank, Random
+
 RankDeference()
 ```
 
@@ -44,6 +46,8 @@ ordered alter pair ``(j, k)`` with ``j`` ranked over ``k``, adds
 ``x_j - x_k``.
 
 ```julia
+wealth = [10.0, 36.0, 55.0, 44.0, 20.0]   # one value per actor
+
 RankNodeICov(wealth; label = "wealth")
 ```
 
@@ -56,6 +60,7 @@ higher.
 the network disagrees with a fixed reference ranking:
 ``(y_{ij} > y_{ik}) \ne (r_{ij} > r_{ik})``.
 
+<!-- skip-check -->
 ```julia
 RankInconsistency(reference_matrix)
 RankInconsistency(reference_rank_network)
@@ -69,6 +74,8 @@ Useful for measuring drift from a prior wave or an exogenous ordering.
 ``(j, k)`` with ``j`` ranked over ``k``, adds ``c_{ij} - c_{ik}``.
 
 ```julia
+cov_matrix = rand(Xoshiro(2), 5, 5)   # dyadic covariate, e.g. distance
+
 RankEdgeCov(cov_matrix; label = "distance")
 ```
 

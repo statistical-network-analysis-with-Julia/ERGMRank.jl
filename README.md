@@ -31,7 +31,8 @@ AlterSwap move).
 
 ## Installation
 
-Requires Julia 1.12+ and the unregistered ERGM.jl:
+Requires Julia 1.12+. ERGMRank.jl depends on the unregistered
+[Network.jl](https://github.com/statistical-network-analysis-with-Julia/Network.jl) and [ERGM.jl](https://github.com/statistical-network-analysis-with-Julia/ERGM.jl) packages, which must be added first (in this order):
 
 ```julia
 using Pkg
@@ -39,6 +40,11 @@ Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Network.
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/ERGM.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl")
 ```
+
+For development, you can instead clone all ecosystem repositories side by
+side (the monorepo layout) and start Julia with the root workspace project
+(`julia --project=.` in the clone root): the `[sources]` path dependencies
+then wire the packages together with no ordered installs needed.
 
 ## Terms
 
@@ -73,6 +79,8 @@ compute(RankNodeICov([10, 20, 30, 40]), rnet)  # -40.0 (matches R)
 
 # Fit by swap-based maximum pseudo-likelihood
 result = ergm_rank(rnet, [RankDeference()])
+# fit_ergm_rank is the standardized entry point (fit_<model> naming);
+# ergm_rank is the R-faithful alias of the same function
 
 # Simulate with AlterSwap Metropolis sampling
 draws = simulate_rank_ergm(rnet, [RankDeference()], [0.5]; n_sim = 100)

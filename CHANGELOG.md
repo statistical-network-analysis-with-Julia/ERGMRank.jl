@@ -51,6 +51,51 @@ ecosystem-wide StatsAPI/GOF conventions.
 
 ### Added
 
+- **Provenanced golden fixture against a real `ergm.rank` fit** (issue #8).
+  `test/fixtures/newcomb_rank.toml` freezes an ergm.rank 4.1.2 MCMLE of
+  `newcomb[[1]] ~ rank.deference + rank.nonconformity("all")` under the
+  CompleteOrder reference, regenerable with `Rscript
+  test/fixtures/r/newcomb_rank.R > test/fixtures/newcomb_rank.toml` (**slow**:
+  ~17 min, six MCMLE fits).
+
+  **The two packages do not fit the same estimator, and the fixture says so.**
+  `ergm.rank` fits the MCMC MLE; `ergm_rank` fits a swap pseudo-likelihood, whose
+  overlapping (ego, alter-pair) comparisons are multiplied as if independent. The
+  coefficient comparison is therefore **`@test_broken`**, not tolerated at a
+  convenient atol, and what the testset *asserts* is the character of the gap:
+
+  - The **observed sufficient statistics match exactly** (844, 12748) — asserted
+    at 1e-9. The term formulas are right.
+  - The gap is **systematic, not Monte-Carlo**: swap-MPLE `[−0.14091, −0.0058538]`
+    against ergm.rank's `[−0.15310, −0.0065927]`, which is **16x and 13x**
+    ergm.rank's own seed-to-seed sd (7.4e-4 / 5.6e-5). No MCMC budget closes it.
+  - But it is **small where it counts**: 0.30 and 0.43 of an ergm.rank standard
+    error — same sign, same order, same substantive story. A different estimator,
+    not a broken one.
+  - The inverse-pseudo-Hessian standard errors are **anticonservative by a
+    measured factor**: 3.9x (deference) and 2.0x (nonconformity) narrower than
+    the MLE's. `se=:bootstrap` recovers most of it (0.0280 against R's 0.0404),
+    and the testset asserts that it does.
+
+- **Robust standard errors: `fit_ergm_rank(rnet, terms; se=:bootstrap)`** (also
+  via `ergm_rank`/`fit_rank_ergm`), with the same keywords and semantics as
+  `ERGM.mple`'s: `n_boot=100`, `boot_burnin`, `boot_interval`, `rng`. Simulate
+  `n_boot` rank networks at θ̂ with the AlterSwap Metropolis sampler
+  (`simulate_rank_ergm`), refit the swap MPLE on each, and report the empirical
+  covariance — on the ONE shared `Networks.bootstrap_cov` loop. **The point
+  estimates are unchanged; only the covariance is replaced.** This matters more
+  here than anywhere: the swap pseudo-likelihood's comparisons are *explicitly*
+  not independent (each ranking enters n − 2 of them), so the inverse-Hessian SEs
+  are anticonservative for every rank fit, with no exact special case to exempt
+  — and they were printed with significance stars (issue #9, ERGMRank#1). On the
+  test fixture the bootstrap SEs are **more than 2× larger** than the Hessian
+  ones on every coefficient.
+- `se_method(fit)` now reports what was actually used (`:hessian`/`:bootstrap`),
+  read off the new `RankERGMResult.se_type` field, and `approximations(fit)` and
+  `show` drop the anticonservatism caveat when a bootstrap was used. The
+  *point-estimate* caveat (swap pseudo-likelihood, no consistency claimed) stays
+  in both, because `is_exact` is unconditionally false for a rank fit.
+
 - ergm.rank-faithful terms ported from `wtchangestats_rank.c`:
   `RankNonconformity(:all | :localAND)`, `RankNodeICov`,
   `RankInconsistency`, `RankEdgeCov`; `CompleteOrderReference` reference
@@ -59,11 +104,31 @@ ecosystem-wide StatsAPI/GOF conventions.
   `fit_rank_ergm` (legacy) kept as `const` aliases.
 - Rank-manipulation API: `get_rank`, `set_rank!`, `swap_ranks!` (the
   AlterSwap elementary move), `is_valid_ranking`.
-- `gof(::RankERGMResult)` extending the ecosystem-wide `Network.gof`,
-  simulating via AlterSwap and returning a `Network.GOFResult`.
+- `gof(::RankERGMResult)` extending the ecosystem-wide `Networks.gof`,
+  simulating via AlterSwap and returning a `Networks.GOFResult`.
 - StatsAPI accessors: `coef`, `stderror`, `vcov`, `loglikelihood`, `nobs`,
   `dof` (nobs = ego × unordered-alter-pair comparisons); `RankERGMResult`
   gains a `vcov` field.
+
+### Performance
+
+- **The swap-MPLE derivative loop no longer allocates (review finding 15).**
+  `_rank_mple_fit` carried its own logistic loop with a per-comparison
+  `(pr*(1-pr)) .* (d * d')` inside it — a fresh `p×p` matrix on every one of the
+  `n(n−1)(n−2)/2` (ego, alter-pair) comparisons of every Newton evaluation,
+  **229 KB per evaluation** on a 17-actor ranking. The swap pseudo-likelihood
+  *is* a logistic likelihood on the swap-difference rows with the response
+  identically `true` (the observed order is always the "success"), so it now runs
+  on the shared `ERGM.logistic_derivatives` — the same builder ERGMMulti and
+  TERGM use: **192 bytes** per evaluation, independent of the number of
+  comparisons, and **4.3x faster** (0.201 ms -> 0.046 ms). The swap design is
+  held as one dense `(comparisons × p)` matrix (`_rank_design`) rather than a
+  vector-of-vectors. Pinned by an `@allocated` regression test. The summation
+  order moves from row-wise accumulation to BLAS, so the arithmetic is not
+  bit-identical — but the fitted coefficients are: measured against the old
+  loop on the same design, **max|Δθ| = 1.1e-16** (one ulp). Newton's last step
+  is quadratically convergent, so a last-ulp difference in the gradient and
+  Hessian does not move the fixed point.
 
 ### Changed
 
@@ -71,8 +136,18 @@ ecosystem-wide StatsAPI/GOF conventions.
   `ERGM.newton_fit` (was a placeholder gradient loop on a logistic
   approximation); SEs/vcov come from the inverse negative Hessian.
 - `show(::RankERGMResult)` prints through the shared
-  `Network.print_coeftable` and labels the reference measure and
+  `Networks.print_coeftable` and labels the reference measure and
   pseudo-log-likelihood explicitly.
+- **The "consistent approximation" claim for swap-MPLE has been withdrawn.**
+  The docstring, README, and estimation guide previously called the
+  estimator a "fast, consistent approximation" to `ergm.rank`'s MCMC MLE
+  without naming an asymptotic regime or any assumptions under which that
+  would hold. The docs now describe what the estimator does — maximize a
+  pseudo-likelihood built from pairwise swap comparisons, which are not
+  independent — state plainly that no consistency result is established
+  here, and warn that the standard errors, being the inverse observed
+  pseudo-Hessian, are expected to be anticonservative under dependence. No
+  numerical behaviour changed.
 
 ### Fixed
 

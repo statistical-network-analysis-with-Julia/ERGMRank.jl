@@ -20,10 +20,21 @@ using Random
 using Statistics
 
 import ERGM: name, compute
-# Shared presentation infrastructure (Network.jl): the ONE `gof` generic all
+# Shared presentation infrastructure (Networks.jl): the ONE `gof` generic all
 # model packages extend, plus the common coefficient-table printer and
 # GOF containers
-import Network: gof, print_coeftable, GOFStatistic, GOFResult
+import Networks: gof, print_coeftable, GOFStatistic, GOFResult
+
+# The ONE shared bootstrap loop (Networks.jl `src/bootstrap.jl`): simulate,
+# refit, empirical covariance. `se=:bootstrap` supplies the two callbacks; the
+# loop, the threading and the rng discipline are not reimplemented here.
+import Networks: bootstrap_cov
+
+# The shared result-metadata protocol (Networks.jl `src/results.jl`): the
+# generic accessors that say what a fit actually did. Imported by name because
+# ERGMRank adds methods for `RankERGMResult`; `fit_metadata(fit)` collects them.
+import Networks: estimand, objective, is_exact, se_method, missing_method,
+                 approximations
 import StatsAPI
 import StatsAPI: coef, stderror, vcov, loglikelihood, nobs, dof
 
@@ -43,7 +54,7 @@ export RankInconsistency, RankEdgeCov
 export fit_ergm_rank, ergm_rank, fit_rank_ergm
 export simulate_rank_ergm
 
-# Goodness of fit (method of the shared Network.jl `gof` generic)
+# Goodness of fit (method of the shared Networks.jl `gof` generic)
 export gof
 
 # StatsAPI methods (re-exported so `coef(fit)` etc. work with just
@@ -441,8 +452,18 @@ end
     RankERGMResult
 
 Results from fitting a rank-order ERGM. `loglik` is the maximized
-swap-based pseudo-log-likelihood (see [`ergm_rank`](@ref)); `vcov` is the
-inverse negative Hessian of the pseudo-log-likelihood at the optimum.
+swap-based pseudo-log-likelihood (see [`ergm_rank`](@ref)).
+
+`se_type` records how `std_errors`/`vcov` were ACTUALLY obtained:
+
+- `:hessian` — the inverse negative Hessian of the swap pseudo-likelihood. The
+  swap comparisons overlap, so these are expected anticonservative.
+- `:bootstrap` — the parametric bootstrap of `fit_ergm_rank(...; se=:bootstrap)`
+  (simulate rank networks at θ̂ with the AlterSwap sampler, refit, empirical
+  covariance).
+
+It is what `Networks.se_method(fit)` reports, and what `show` reads before
+deciding whether the anticonservatism caveat is still true of this fit.
 """
 struct RankERGMResult
     model::RankERGMModel
@@ -451,7 +472,14 @@ struct RankERGMResult
     vcov::Matrix{Float64}
     loglik::Float64
     converged::Bool
+    se_type::Symbol
 end
+
+# Backwards-compatible constructor: a result built without an `se_type` reports
+# the inverse-Hessian standard errors it in fact had.
+RankERGMResult(model, coefficients, std_errors, vcov, loglik, converged) =
+    RankERGMResult(model, coefficients, std_errors, vcov, loglik, converged,
+                   :hessian)
 
 # Two-sided normal p-values via the complementary CDF (the naive
 # 2(1 − cdf) form underflows to exactly 0 beyond |z| ≈ 8.3); NaN standard
@@ -464,11 +492,100 @@ function Base.show(io::IO, result::RankERGMResult)
     println(io, "Reference: CompleteOrder")
     println(io, "Pseudo-log-likelihood: $(round(result.loglik, digits=4))")
     println(io, "Converged: $(result.converged)")
+    println(io, "Std. errors: ", result.se_type === :bootstrap ?
+                "parametric bootstrap" : "inverse pseudo-Hessian")
     println(io)
     z = result.coefficients ./ result.std_errors
     print_coeftable(io, [name(term) for term in result.model.terms],
                     result.coefficients, result.std_errors, _z_pvalues(z);
                     z_values=z)
+
+    # Honest-uncertainty caveat (mirroring ERGM.jl's show), and the prose twin
+    # of what `approximations(result)` reports. The POINT ESTIMATE is a swap
+    # pseudo-likelihood estimate either way — no rank fit is exact, which is why
+    # `is_exact(::RankERGMResult)` is unconditionally false — but the standard
+    # errors are only anticonservative when they are the inverse pseudo-Hessian.
+    # A bootstrap covariance does not treat the overlapping comparisons as
+    # independent, so saying it is anticonservative would be a lie.
+    println(io)
+    if result.se_type === :bootstrap
+        println(io, "Note: this model was fit by swap-based maximum pseudolikelihood, so the")
+        println(io, "point estimates are those of a pseudo-likelihood (not the MCMC MLE). The")
+        println(io, "standard errors are a parametric bootstrap: they do not treat the")
+        println(io, "overlapping swap comparisons as independent.")
+    else
+        println(io, "Warning: this model was fit by swap-based maximum pseudolikelihood.")
+        println(io, "The pairwise-swap comparisons overlap, so the standard errors (inverse")
+        println(io, "pseudo-Hessian) ignore that dependence and are expected to be")
+        println(io, "anticonservative; the p-values should be treated as a rough guide.")
+        println(io, "Refit with `se=:bootstrap` for a parametric-bootstrap covariance.")
+    end
+end
+
+# ============================================================================
+# The shared result-metadata protocol (Networks.jl `src/results.jl`)
+# ============================================================================
+#
+# `fit_metadata(fit)` collects these accessors, so the caveats that
+# `fit_ergm_rank`'s docstring spells out in prose are what a machine reads too.
+
+estimand(::RankERGMResult) = :rank_ergm
+
+"""
+    objective(::RankERGMResult) -> Symbol
+
+`:pseudolikelihood` — the **swap** pseudo-likelihood: the product, over every
+(ego, unordered alter pair), of the conditional probability of the observed
+relative order given the rest of the rankings. The AlterSwap move takes the role
+of the edge toggle in dyadwise MPLE.
+"""
+objective(::RankERGMResult) = :pseudolikelihood
+
+"""
+    is_exact(::RankERGMResult) -> Bool
+
+Always `false`. The swap comparisons overlap — each ranking enters `n − 2` of
+the pairwise conditionals — so their product is not the likelihood, and **no
+consistency result is claimed** for this estimator (the earlier "consistent
+approximation" claim has been withdrawn; see [`fit_ergm_rank`](@ref)).
+"""
+is_exact(::RankERGMResult) = false
+
+"""
+    se_method(result::RankERGMResult) -> Symbol
+
+What the reported standard errors ACTUALLY are: `:hessian` (the inverse negative
+Hessian of the swap pseudo-likelihood) or `:bootstrap` (the parametric bootstrap
+of `fit_ergm_rank(...; se=:bootstrap)`). Read straight off the fit.
+"""
+se_method(result::RankERGMResult) = result.se_type
+
+# A `RankNetwork` carries complete orderings, not a dyad mask: there is no
+# unobserved-tie concept for the estimator to treat one way or the other.
+missing_method(::RankERGMResult) = :none
+
+function approximations(result::RankERGMResult)
+    # The point-estimate caveat holds for every rank fit, however the standard
+    # errors were computed: `se=:bootstrap` replaces the covariance, not θ̂.
+    out = String[
+        "swap pseudo-likelihood: the (ego, alter-pair) swap conditionals are " *
+        "multiplied as if independent, but they overlap (each ranking enters " *
+        "n − 2 comparisons), so this is not the likelihood and no consistency " *
+        "result is claimed for the estimator",
+    ]
+    if result.se_type === :bootstrap
+        push!(out, "standard errors are a parametric bootstrap of the swap MPLE " *
+                   "(simulate rank networks at θ̂ with the AlterSwap sampler, refit, " *
+                   "empirical covariance): they do NOT treat the overlapping swap " *
+                   "comparisons as independent, but they are Monte-Carlo estimates " *
+                   "and assume the fitted model generated the data")
+    else
+        push!(out, "inverse-Hessian standard errors of the naive swap pseudo-likelihood: " *
+                   "they ignore the dependence between the overlapping comparisons and are " *
+                   "expected anticonservative (too small). Treat them as a rough guide, not " *
+                   "calibrated inference — or refit with `se=:bootstrap`")
+    end
+    return out
 end
 
 # StatsAPI interface: methods on the shared statistics generics, so results
@@ -496,9 +613,29 @@ product of these conditionals is maximized by Newton-Raphson with
 step-halving.
 
 This is the natural rank analogue of dyadwise MPLE (the AlterSwap move
-takes the role of the edge toggle). It is a consistent, fast approximation
-to the MCMC MLE of `ergm.rank`; like all pseudo-likelihoods it understates
-uncertainty for strongly dependent models.
+takes the role of the edge toggle). It is fast, and it is *not* the MCMC
+MLE that `ergm.rank` computes: it maximizes a pseudo-likelihood formed by
+multiplying pairwise-swap conditionals that are not independent, so the
+two estimators generally disagree.
+
+!!! warning "What is and is not claimed"
+    **No consistency result is established here.** Earlier versions of this
+    docstring called swap-MPLE a "consistent approximation" to the MCMC MLE;
+    that claim was unqualified by any asymptotic regime or assumptions and
+    has been withdrawn. For dyad-independent-analogue models (where the
+    swap conditionals really are the model's conditionals) the
+    pseudo-likelihood coincides with the likelihood; outside that case the
+    estimator's large-sample behaviour in this setting has not been
+    characterized, and MPLE for dependent ERGMs is known to be biased in
+    finite samples.
+
+    **The default standard errors are the inverse observed pseudo-Hessian** —
+    the curvature of the pseudo-log-likelihood, which treats the overlapping
+    swap comparisons as independent. They therefore ignore the dependence
+    between comparisons and are expected to be **anticonservative** (too
+    small, giving over-narrow intervals and anti-conservative tests) under
+    dependence. Treat them as a rough guide, not calibrated inference — or
+    pass `se=:bootstrap` (below), which does not make that assumption.
 
 The pseudo-log-likelihood is maximized with the shared `ERGM.newton_fit`
 Newton–Raphson-with-step-halving optimizer.
@@ -506,51 +643,116 @@ Newton–Raphson-with-step-halving optimizer.
 [`ergm_rank`](@ref) is the R-faithful alias (matching the `ergm.rank`
 package); [`fit_rank_ergm`](@ref) is a legacy alias.
 
+# Standard errors
+
+- `se=:hessian` (default) — the inverse negative pseudo-Hessian; see the warning
+  above.
+- `se=:bootstrap` — parametric bootstrap: simulate `n_boot` rank networks from
+  the fitted model at θ̂ with [`simulate_rank_ergm`](@ref) (AlterSwap
+  Metropolis), refit the swap MPLE on each, and report the empirical covariance
+  of the refits. The point estimates are unchanged; only the covariance is
+  replaced. This is the same option, with the same keywords and the same
+  semantics, as `ERGM.mple`'s, and it runs on the ONE shared
+  `Networks.bootstrap_cov` loop.
+
 # Keyword Arguments
 - `maxiter::Int=100`, `tol::Float64=1e-8` (passed to `newton_fit`)
+- `se::Symbol=:hessian`: `:hessian` or `:bootstrap` (above)
+- `n_boot::Int=100`: number of bootstrap replicates (`se=:bootstrap` only)
+- `boot_burnin::Int=500`, `boot_interval::Int=50`: MCMC controls for the
+  bootstrap simulations (the [`simulate_rank_ergm`](@ref) defaults)
+- `rng::AbstractRNG=Random.default_rng()`: source of the bootstrap randomness —
+  a fixed `rng` reproduces the standard errors exactly
 """
 function fit_ergm_rank(rnet::RankNetwork, terms::Vector{<:AbstractERGMTerm};
-                       maxiter::Int=100, tol::Float64=1e-8)
+                       maxiter::Int=100, tol::Float64=1e-8,
+                       se::Symbol=:hessian,
+                       n_boot::Int=100,
+                       boot_burnin::Int=500,
+                       boot_interval::Int=50,
+                       rng::Random.AbstractRNG=Random.default_rng())
+    se in (:hessian, :bootstrap) ||
+        throw(ArgumentError("se must be :hessian or :bootstrap, got :$se"))
     is_valid_ranking(rnet) ||
         throw(ArgumentError("network is not a valid complete ranking: " *
                             something(_ranking_violation(rnet.ranks), "")))
 
     model = RankERGMModel(collect(AbstractERGMTerm, terms), copy(rnet),
                           CompleteOrderReference())
-    n = rnet.n
-    p = length(terms)
-    work = copy(rnet)
 
-    # Design vectors: for each (ego, {j,k}) the difference
-    # d = g(y_observed) − g(y_swapped)
-    D = Vector{Vector{Float64}}()
+    fit = _rank_mple_fit(model.terms, rnet; maxiter=maxiter, tol=tol)
+
+    vcov, std_errors = fit.vcov, fit.se
+    if se === :bootstrap
+        vcov, std_errors = _rank_bootstrap_cov(model, fit.θ; n_boot=n_boot,
+                                               boot_burnin=boot_burnin,
+                                               boot_interval=boot_interval,
+                                               maxiter=maxiter, tol=tol, rng=rng)
+    end
+
+    return RankERGMResult(model, fit.θ, std_errors, vcov, fit.loglik,
+                          fit.converged, se)
+end
+
+# Core swap MPLE: the design vectors d = g(y) − g(y with j,k swapped) over every
+# (ego, unordered alter pair), maximized by the shared Newton optimizer. Shared
+# by `fit_ergm_rank` and by the parametric bootstrap's refits.
+function _rank_mple_fit(terms::Vector{AbstractERGMTerm}, rnet::RankNetwork;
+                        maxiter::Int=100, tol::Float64=1e-8)
+    p = length(terms)
+    D = _rank_design(terms, copy(rnet))
+
+    # The swap pseudo-likelihood IS a logistic likelihood on the D rows with the
+    # response identically TRUE — the observed order is always the "success" —
+    # so the derivatives come from the shared `ERGM.logistic_derivatives` (review
+    # finding 15): gemv/gemm over the whole design (η = Dβ, ∇ = D'(1−p),
+    # −H = D'WD), not a per-comparison `d * d'` outer product allocating a p×p
+    # matrix on every one of the size(D, 1) rows of every Newton evaluation.
+    # Never paste the loop back in; ERGMMulti and TERGM run on the same one.
+    derivatives = logistic_derivatives(D, trues(size(D, 1)))
+    return newton_fit(derivatives, zeros(p); maxiter=maxiter, tol=tol)
+end
+
+# The swap design: for each (ego, unordered alter pair {j,k}) the difference
+# d = g(y_observed) − g(y_swapped), as ONE dense (comparisons × p) matrix — the
+# derivatives are BLAS over the whole thing, so a vector-of-vectors would just be
+# a scatter to copy out of.
+function _rank_design(terms::Vector{AbstractERGMTerm}, work::RankNetwork)
+    n = work.n
+    p = length(terms)
+    rows = Vector{Float64}[]
     for ego in 1:n
         alters = [v for v in 1:n if v != ego]
         for a in 1:length(alters), b in (a+1):length(alters)
-            push!(D, -_swap_delta(model.terms, work, ego, alters[a], alters[b]))
+            push!(rows, -_swap_delta(terms, work, ego, alters[a], alters[b]))
         end
     end
-
-    function derivatives(β)
-        ll = 0.0
-        grad = zeros(p)
-        hess = zeros(p, p)
-        for d in D
-            η = dot(β, d)
-            pr = 1.0 / (1.0 + exp(-η))       # P(observed order | rest)
-            # log pr computed stably
-            ll += η < 0 ? η - log1p(exp(η)) : -log1p(exp(-η))
-            grad .+= d .* (1.0 - pr)
-            hess .-= (pr * (1.0 - pr)) .* (d * d')
+    D = Matrix{Float64}(undef, length(rows), p)
+    for (r, d) in enumerate(rows)
+        @inbounds for k in 1:p
+            D[r, k] = d[k]
         end
-        return ll, grad, hess
     end
+    return D
+end
 
-    # Maximize with the shared Newton-with-step-halving optimizer
-    fit = newton_fit(derivatives, zeros(p); maxiter=maxiter, tol=tol)
+# Parametric-bootstrap covariance of the swap MPLE: simulate `n_boot` rank
+# networks at θ̂ with the AlterSwap sampler, refit the swap MPLE on each, take
+# the empirical covariance. The loop is the shared `Networks.bootstrap_cov`; this
+# supplies only the two callbacks that are ERGMRank's.
+function _rank_bootstrap_cov(model::RankERGMModel, θ̂::Vector{Float64};
+                             n_boot::Int, boot_burnin::Int, boot_interval::Int,
+                             maxiter::Int, tol::Float64,
+                             rng::Random.AbstractRNG)
+    simulate(rng, B) = simulate_rank_ergm(model.network, model.terms, θ̂;
+                                          n_sim=B, burnin=boot_burnin,
+                                          interval=boot_interval, rng=rng)
 
-    return RankERGMResult(model, fit.θ, fit.se, fit.vcov, fit.loglik,
-                          fit.converged)
+    refit(sim::RankNetwork) =
+        _rank_mple_fit(model.terms, sim; maxiter=maxiter, tol=tol).θ
+
+    boot = bootstrap_cov(refit, simulate, θ̂; n_boot=n_boot, rng=rng)
+    return boot.vcov, boot.se
 end
 
 """
@@ -646,8 +848,8 @@ simulated from the fitted model with [`simulate_rank_ergm`](@ref) (AlterSwap
 Metropolis sampling) and the observed model statistics are compared with
 their simulated distributions.
 
-This is a method of the shared `Network.gof` generic; it returns the shared
-`Network.GOFResult` (observed value, simulation envelope, and two-sided
+This is a method of the shared `Networks.gof` generic; it returns the shared
+`Networks.GOFResult` (observed value, simulation envelope, and two-sided
 Monte-Carlo p-value per statistic).
 
 # Keyword Arguments

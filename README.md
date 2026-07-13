@@ -32,11 +32,11 @@ AlterSwap move).
 ## Installation
 
 Requires Julia 1.12+. ERGMRank.jl depends on the unregistered
-[Network.jl](https://github.com/statistical-network-analysis-with-Julia/Network.jl) and [ERGM.jl](https://github.com/statistical-network-analysis-with-Julia/ERGM.jl) packages, which must be added first (in this order):
+[Networks.jl](https://github.com/statistical-network-analysis-with-Julia/Networks.jl) and [ERGM.jl](https://github.com/statistical-network-analysis-with-Julia/ERGM.jl) packages, which must be added first (in this order):
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Network.jl")
+Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/Networks.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/ERGM.jl")
 Pkg.add(url="https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl")
 ```
@@ -93,9 +93,15 @@ all(is_valid_ranking, draws)  # true — every draw is a complete ranking
 and each unordered pair of alters, the conditional probability of their
 observed relative order given the rest of the rankings is logistic in
 `θ'[g(y) − g(y_swapped)]`. This is the rank analogue of dyadwise MPLE (the
-AlterSwap move replaces the edge toggle) and a fast, consistent
-approximation to `ergm.rank`'s MCMC MLE; like all pseudo-likelihoods it
-understates uncertainty for strongly dependent models.
+AlterSwap move replaces the edge toggle).
+
+It is **not** `ergm.rank`'s MCMC MLE, and it is not claimed to be a
+consistent approximation to it: the swap conditionals being multiplied are
+not independent, and no asymptotic regime under which swap-MPLE is
+consistent has been established here. Standard errors are the inverse
+observed pseudo-Hessian, so they ignore the dependence between overlapping
+comparisons and are likely **anticonservative** (too small) whenever the
+model is dependent. Treat them as approximate.
 
 ## Simulation
 

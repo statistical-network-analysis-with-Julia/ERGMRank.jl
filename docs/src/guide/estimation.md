@@ -19,9 +19,24 @@ step-halving); standard errors come from the inverse observed information
 of the pseudo-likelihood.
 
 This is the rank analogue of dyadwise MPLE — the AlterSwap move plays the
-role of the edge toggle. It is fast and consistent, but like every
-pseudo-likelihood it understates uncertainty when dependence is strong;
-treat the standard errors as approximate.
+role of the edge toggle. It is fast, and it is what the estimator actually
+does: it maximizes a product of pairwise-swap conditionals.
+
+!!! warning "Consistency is not claimed; standard errors are anticonservative"
+    Swap-MPLE is **not** the MCMC MLE that R's `ergm.rank` computes, and no
+    consistency result for it is established in this package — the
+    comparisons entering the product are not independent, and no asymptotic
+    regime or set of assumptions under which the estimator is consistent has
+    been identified. (Where the swap conditionals *are* the model's
+    conditionals, the pseudo-likelihood coincides with the likelihood;
+    otherwise its large-sample behaviour here is uncharacterized, and MPLE
+    for dependent ERGMs is known to be biased in finite samples.)
+
+    Standard errors are the **inverse observed pseudo-Hessian**. That
+    curvature treats the overlapping swap comparisons as independent, so the
+    standard errors are expected to be **anticonservative** — too small,
+    yielding over-narrow confidence intervals and over-liberal tests — under
+    dependence. Use them as a rough guide only.
 
 ```julia
 using ERGMRank, Random

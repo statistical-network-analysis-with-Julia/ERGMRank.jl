@@ -124,6 +124,21 @@ complete-ordering space.
    Diagnose Exponential-Family Models for Rank-Order Relational Data.
    R package. [https://cran.r-project.org/package=ergm.rank](https://cran.r-project.org/package=ergm.rank)
 
+## Citation
+
+If you use ERGMRank.jl in your work, please cite it using the entry in
+[`CITATION.bib`](CITATION.bib):
+
+```biblatex
+@misc{SNWJERGMRankJL,
+  author = {{Statistical Network Analysis with Julia}},
+  title = {ERGMRank.jl: Exponential Random Graph Models for Rank-Order Relational Data in Julia},
+  year = {2026},
+  url = {https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl},
+  note = {Homepage: https://statistical-network-analysis-with-Julia.github.io/ERGMRank.jl; GitHub: https://github.com/statistical-network-analysis-with-Julia}
+}
+```
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

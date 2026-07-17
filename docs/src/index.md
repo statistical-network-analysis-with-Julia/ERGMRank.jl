@@ -52,3 +52,18 @@ Depth = 2
    models for rank-order relational data. *Sociological Methodology*, 47(1), 68-112.
 2. Krivitsky, P.N. (2012). Exponential-family random graph models for
    valued networks. *Electronic Journal of Statistics*, 6, 1100-1128.
+
+## Citation
+
+If you use ERGMRank.jl in your work, please cite it using the entry in
+[`CITATION.bib`](https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl/blob/main/CITATION.bib):
+
+```biblatex
+@misc{SNWJERGMRankJL,
+  author = {{Statistical Network Analysis with Julia}},
+  title = {ERGMRank.jl: Exponential Random Graph Models for Rank-Order Relational Data in Julia},
+  year = {2026},
+  url = {https://github.com/statistical-network-analysis-with-Julia/ERGMRank.jl},
+  note = {Homepage: https://statistical-network-analysis-with-Julia.github.io/ERGMRank.jl; GitHub: https://github.com/statistical-network-analysis-with-Julia}
+}
+```

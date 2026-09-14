@@ -1,0 +1,124 @@
+name = "newcomb_rank"
+
+[provenance]
+r_version = "4.6.1"
+ergm_rank_version = "4.1.2"
+ergm_version = "4.12.0"
+network_version = "1.20.0"
+seed = 20260713
+script = "test/fixtures/r/newcomb_rank.R"
+date = "2026-09-13"
+dataset = "ergm.rank::newcomb[[1]] (Newcomb 1961): 17 fraternity men, week 1, each ranking the other 16; GREATER value = HIGHER standing"
+model = "newcomb[[1]] ~ rank.deference + rank.nonconformity(\"all\"), response=\"rank\", reference=~CompleteOrder"
+r_estimator = "MCMC-MLE (AlterSwap proposal)"
+julia_estimator = "MCMC-MLE (fit_ergm_rank(...; method=:mcmle), AlterSwap proposal) -- ASSERTED; the default method=:mple swap pseudo-likelihood is a DIFFERENT estimator, characterised but not asserted; see [tolerance]"
+mcmc_control = "control.ergm(MCMC.samplesize=2048, MCMC.burnin=8192, MCMC.interval=512)"
+replication_seeds = "101,202,303,404,505"
+
+[tolerance]
+# Observed sufficient statistics: a deterministic function of the ranking.
+# No estimator, no Monte Carlo. Machine precision, and a disagreement is a
+# bug in a term formula, full stop.
+summary_statistics = 1e-9
+#
+# COEFFICIENTS: ASSERTED against ergm.rank's MCMC MLE, for
+# `fit_ergm_rank(...; method=:mcmle)` run at ergm.rank's own MCMC budget
+# (`mcmc_control` in [provenance]: n_samples=2048, burnin=8192, interval=512).
+#
+# Both are Monte-Carlo estimates of the same MLE, so each has a seed-to-seed
+# spread and the tolerance is built from both: `mle_seed_sd` ([values]) is
+# ergm.rank disagreeing with itself over five further seeds; `julia_seed_sd`
+# below is ERGMRank.jl disagreeing with itself over five Julia seeds
+# (Xoshiro(1), ..., Xoshiro(5)) at the SAME budget, one chain, the bridge
+# skipped (it runs after the final sample and does not touch the
+# coefficients), measured 2026-09-12 on ERGMRank.jl 0.2.0-dev:
+#   deference     -0.15184 -0.15297 -0.15217 -0.15302 -0.15250  (sd 5.1e-4)
+#   nonconformity -0.0067429 -0.0065566 -0.0065854 -0.0066495 -0.0066122  (sd 7.2e-5)
+# The Julia mean sits 0.81 and 0.65 ergm.rank seed-sd from `mle_coefficients`;
+# the swap-MPLE sat 16x and 13x away. Same estimator, at last.
+#
+# The testset asserts, on two Julia seeds,
+#   |coef - mle_coefficients| <= coefficient_sd_multiple * (mle_seed_sd + julia_seed_sd).
+# Justification of the multiple: the difference of two independent Monte-Carlo
+# estimates has sd sqrt(sd_R^2 + sd_J^2) <= sd_R + sd_J, so 4 of the sum is
+# beyond a 4-sigma band of the difference; `mle_coefficients` is itself one
+# draw (1e-5 and 2e-5 from `mle_seed_mean`, absorbed by the same band). The
+# largest deviation observed over the five Julia seeds was 1.26e-3 and 1.50e-4,
+# a quarter of the band (5.0e-3 and 5.1e-4). Do not raise the multiple: a
+# failure at 4 means the estimators disagree, not that the seed was unlucky.
+julia_seed_sd = [0.0005105004020318198, 7.216447602442238e-5]
+coefficient_sd_multiple = 4
+#
+# STANDARD ERRORS: asserted within `std_errors_rtol` relative of
+# `mle_std_errors`. Both are the inverse Fisher information of the final
+# MCMC sample plus the Monte-Carlo-error component (Hunter & Handcock 2006
+# section 3.3; ergm's `MCMC %`), so they differ only by the sampling noise of
+# a 2048-draw covariance: observed over the five Julia seeds 0.06%-3.0%
+# (deference) and 0.1%-3.7% (nonconformity). 15% is five times the largest
+# of those and still a quarter of the anticonservatism the swap-MPLE's
+# pseudo-Hessian shows (3.9x / 2.0x too narrow), which it must keep failing.
+std_errors_rtol = 0.15
+#
+# LOG-LIKELIHOOD: ergm.rank's logLik is RELATIVE to the uniform-ordering model
+# (theta = 0), whose likelihood ergm defines as 0 for a valued ERGM; ERGMRank.jl
+# reports the absolute log-likelihood, so the testset asserts
+#   |loglikelihood(fit) + n*log((n-1)!) - mle_loglik|
+#     <= loglik_sd_multiple * (mle_loglik_mc_se + julia_bridge_sd).
+# Both sides are path-sampling (bridge) estimates with Monte-Carlo error:
+# `mle_loglik_mc_se` ([values]) is ergm's own standard error of its bridge
+# (16 bridges at the fit's MCMC budget); `julia_bridge_sd` is ERGMRank.jl's
+# bridge (bridge_rungs=16, bridge_samples=512, the fit's burn-in and interval)
+# disagreeing with itself over the five Julia seeds Xoshiro(1..5), measured
+# 2026-09-12 on ERGMRank.jl 0.2.0-dev as loglikelihood + 17*log(16!):
+#   18.87717 18.90319 18.85990 18.88535 18.85694  (sd 1.9e-2; at
+#   bridge_samples=2048: 18.90821 18.90680 18.87066 18.82997 18.87499, sd 3.2e-2 --
+#   the error is dominated by the rung chains' mixing, not the draw count)
+# The difference of two independent estimates has sd <= the sum of the two,
+# so 4 of the sum is beyond a 4-sigma band; the theta-hat mismatch between the
+# two fits shifts the log-likelihood by ~1/2 dtheta' I dtheta ~ 2e-3, inside it.
+# Do not raise the multiple: a failure at 4 means the bridges disagree, not
+# that a seed was unlucky.
+julia_bridge_sd = 0.01903536725140555
+loglik_sd_multiple = 4
+#
+# THE SWAP-MPLE (method=:mple, the default) HAS NO TOLERANCE, BY DESIGN. It is
+# a different estimator, not a noisy version of the MLE, and ERGMRank.jl's docs
+# decline to claim consistency for it. The Julia testset asserts the CHARACTER
+# of its gap instead (larger than 5 `mle_seed_sd`, smaller than 0.6 of an MLE
+# standard error; pseudo-Hessian SEs narrower than the MLE's), so that a
+# change in either direction is noticed.
+
+[values]
+# --- the ranking, frozen. Julia rebuilds it exactly. --------------------
+n_actors = 17
+ranks = [[0, 7, 12, 11, 10, 4, 13, 14, 15, 16, 3, 9, 1, 5, 8, 6, 2], [8, 0, 16, 1, 11, 12, 2, 14, 10, 13, 15, 6, 7, 9, 5, 3, 4], [13, 10, 0, 7, 8, 11, 9, 15, 6, 5, 2, 1, 16, 12, 4, 14, 3], [13, 1, 15, 0, 14, 4, 3, 16, 12, 7, 6, 9, 8, 11, 10, 5, 2], [14, 10, 11, 7, 0, 16, 12, 4, 5, 6, 2, 3, 13, 15, 8, 9, 1], [7, 13, 11, 3, 15, 0, 10, 2, 4, 16, 14, 5, 1, 12, 9, 8, 6], [15, 4, 11, 3, 16, 8, 0, 6, 9, 10, 5, 2, 14, 12, 13, 7, 1], [9, 8, 16, 7, 10, 1, 14, 0, 11, 3, 2, 5, 4, 15, 12, 13, 6], [6, 16, 8, 14, 13, 11, 4, 15, 0, 7, 1, 2, 9, 5, 12, 10, 3], [2, 16, 9, 14, 11, 4, 3, 10, 7, 0, 15, 8, 12, 13, 1, 6, 5], [12, 7, 4, 8, 6, 14, 9, 16, 3, 13, 0, 2, 10, 15, 11, 5, 1], [15, 11, 2, 6, 5, 14, 7, 13, 10, 4, 3, 0, 16, 8, 9, 12, 1], [1, 15, 16, 7, 4, 2, 12, 14, 13, 8, 6, 11, 0, 10, 3, 9, 5], [14, 5, 8, 6, 13, 9, 2, 16, 1, 3, 12, 7, 15, 0, 4, 11, 10], [16, 9, 4, 8, 1, 13, 11, 12, 6, 2, 3, 5, 10, 15, 0, 14, 7], [8, 11, 15, 3, 13, 16, 14, 12, 1, 9, 2, 6, 10, 7, 5, 0, 4], [9, 15, 10, 2, 4, 11, 5, 12, 3, 7, 8, 1, 6, 16, 14, 13, 0]]
+
+# --- observed sufficient statistics: deterministic, ASSERTED at 1e-9 ----
+summary_statistic_names = ["deference", "nonconformity"]
+summary_statistics = [844, 12748]
+
+# --- ergm.rank's MCMC MLE: ASSERTED for method=:mcmle (see [tolerance]) ---
+# `fit_ergm_rank(...; method=:mcmle)` at the same MCMC budget must reproduce
+# these within the two implementations' seed-to-seed spread; the default
+# swap pseudo-likelihood (method=:mple) is measured AGAINST them, not held
+# TO them.
+term_names = ["deference", "nonconformity"]
+mle_coefficients = [-0.15310126894401968, -0.0065926521550222729]
+mle_std_errors = [0.040448846749775731, 0.0017359074004815738]
+
+# ergm.rank's logLik (RELATIVE to theta = 0; see [tolerance]), its own MC
+# standard error, df, nobs (= the n(n-1) ordered dyads, R's convention for
+# the likelihood) and the AIC/BIC ergm derives from them.
+mle_loglik = 18.799798478305423
+mle_loglik_mc_se = 0.19874060783254738
+mle_df = 2
+mle_nobs = 272
+mle_aic = -33.599596956610846
+mle_bic = -26.387992824018852
+
+# ergm.rank disagreeing with ITSELF over five further seeds. This is the
+# Monte-Carlo width of the MLE, half of the MCMLE tolerance above, and the
+# unit the swap-MPLE gap is reported in: a gap of one of these means
+# nothing; a gap of sixteen means a different estimator.
+mle_seed_sd = [0.00074306491731562817, 5.6148199288267778e-05]
+mle_seed_mean = [-0.15310843090263848, -0.0066143465120896564]

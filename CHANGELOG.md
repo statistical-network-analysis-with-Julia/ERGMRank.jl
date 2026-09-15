@@ -677,6 +677,9 @@ ecosystem-wide StatsAPI/GOF conventions.
 
 ### Fixed
 
+- CI uses a fixed ranking for the boundary-likelihood regression and checks
+  bootstrap thread independence with the documented exclusion of non-finite
+  refits, including matching NaN rows across serial and threaded runs.
 - **`gof(fit)` and `simulate_rank_ergm(fit)` refuse a fit with a non-finite
   coefficient** (one fixed at `±Inf` by a statistic at the boundary of its
   attainable range, or `NaN` — not identified, `converged == false`), as

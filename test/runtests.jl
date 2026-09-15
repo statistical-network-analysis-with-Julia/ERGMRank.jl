@@ -1097,9 +1097,10 @@ well_posed_network() = random_rank_network(6; rng=MersenneTwister(1))
         #      rows have probability σ(0) = ½, so the exact limit of the
         #      pseudo-likelihood is n_kept·log(½) — what the non-dropped path
         #      reports for zero rows too — never the 0.0 of an empty product
-        #      (which printed "Pseudo-AIC: 0.0", a perfect fit). Xoshiro(4001)
-        #      at n = 4: rank.deference at its minimum, 6 of 12 swaps leave it.
-        zero = random_rank_network(4; rng=Random.Xoshiro(4001))
+        #      (which printed "Pseudo-AIC: 0.0", a perfect fit). This explicit
+        #      ranking has deference at its minimum; 6 of 12 swaps leave it.
+        #      Keep the fixture fixed across changes to Random.randperm.
+        zero = RankNetwork([0 1 3 2; 2 0 3 1; 2 3 0 1; 3 2 1 0])
         fz = @test_logs (:warn, r"smallest attainable values") match_mode=:any fit_ergm_rank(
             zero, [RankDeference()])
         @test coef(fz) == [-Inf] && fz.converged
@@ -1342,17 +1343,26 @@ well_posed_network() = random_rank_network(6; rng=MersenneTwister(1))
         n_boot = 30
         boot = fit_ergm_rank(rnet, terms; se=:bootstrap, n_boot=n_boot,
                              rng=Xoshiro(3))
-        @test all(isfinite, boot.boot_replicates)
+        @test size(boot.boot_replicates) == (n_boot, length(terms))
         θ̂ = coef(boot)
         tv = boot.model.terms
         # The package's own two callbacks, on the shared loop, single-threaded
         simulate(rng, B) = simulate_rank_ergm(rnet, tv, θ̂; n_sim=B, rng=rng)
-        refit(sim) = ERGMRank._rank_mple_fit(tv, sim; warn=false).θ
+        function refit(sim)
+            fit = ERGMRank._rank_mple_fit(tv, sim; warn=false)
+            return fit.converged && all(isfinite, fit.θ) ? fit.θ : fill(NaN, length(θ̂))
+        end
         serial = Networks.bootstrap_cov(refit, simulate, θ̂; n_boot=n_boot,
                                         rng=Xoshiro(3), threaded=false)
-        @test serial.replicates == boot.boot_replicates
-        @test serial.vcov == vcov(boot)
-        @test serial.se == stderror(boot)
+        # Some RNG/library versions produce a replicate with no finite MPLE.
+        # The serial oracle must apply the same documented exclusion policy,
+        # and matching NaN rows are part of the reproducibility guarantee.
+        @test isequal(serial.replicates, boot.boot_replicates)
+        finite_rows = [all(isfinite, row) for row in eachrow(serial.replicates)]
+        @test count(finite_rows) >= 2
+        serial_cov = cov(serial.replicates[finite_rows, :])
+        @test serial_cov == vcov(boot)
+        @test sqrt.(max.(diag(serial_cov), 0.0)) == stderror(boot)
         # (CI runs one cell with JULIA_NUM_THREADS=4; on it the default loop
         # above is threaded and this equality is the actual guarantee.)
         @test Threads.nthreads() >= 1

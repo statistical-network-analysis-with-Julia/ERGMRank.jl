@@ -677,6 +677,10 @@ ecosystem-wide StatsAPI/GOF conventions.
 
 ### Fixed
 
+- CI collects coverage in the single-threaded Julia 1.12 Linux job and runs
+  the full four-thread suite without coverage instrumentation, avoiding
+  excessive overhead in parallel MCMC and bridge loops. BLAS uses one thread
+  per calling task; coverage processing and upload follow the instrumented job.
 - CI uses a fixed ranking for the boundary-likelihood regression and checks
   bootstrap thread independence with the documented exclusion of non-finite
   refits, including matching NaN rows across serial and threaded runs.

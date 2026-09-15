@@ -574,6 +574,8 @@ ecosystem-wide StatsAPI/GOF conventions.
 
 ### Changed
 
+- Documentation uses the default Documenter themes, with a new package-specific
+  SVG icon and browser favicon in the official Julia logo colors.
 - **The newcomb golden fixture is now an assertion, not a `@test_broken`.**
   `test/fixtures/r/newcomb_rank.R` gained the `[tolerance]` keys
   `julia_seed_sd`, `coefficient_sd_multiple = 4` and `std_errors_rtol = 0.15`

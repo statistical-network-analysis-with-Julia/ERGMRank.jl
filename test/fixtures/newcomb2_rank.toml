@@ -1,0 +1,73 @@
+name = "newcomb2_rank"
+
+[provenance]
+r_version = "4.6.1"
+ergm_rank_version = "4.1.2"
+ergm_version = "4.12.0"
+network_version = "1.20.0"
+seed = 20261002
+script = "test/fixtures/r/newcomb2_rank.R"
+date = "2026-10-06"
+dataset = "ergm.rank::newcomb[[2]] (Newcomb 1961): 17 fraternity men, week 2, each ranking the other 16, with week 1 (newcomb[[1]]) as the reference ranking; GREATER value = HIGHER standing"
+model = "newcomb[[2]] ~ rank.deference + rank.nonconformity(\"localAND\") + rank.inconsistency(newcomb[[1]], \"rank\"), response=\"rank\", reference=~CompleteOrder"
+r_estimator = "MCMC-MLE (AlterSwap proposal)"
+julia_estimator = "MCMC-MLE (fit_ergm_rank, the default method=:mcmle, AlterSwap proposal) -- ASSERTED; the swap pseudo-likelihood (method=:mple) is a DIFFERENT estimator whose gap is characterised; see [tolerance]"
+mcmc_control = "control.ergm(MCMC.samplesize=2048, MCMC.burnin=8192, MCMC.interval=512)"
+replication_seeds = "101,202,303,404,505"
+
+[tolerance]
+# Observed sufficient statistics: deterministic, machine precision.
+summary_statistics = 1e-9
+#
+# COEFFICIENTS: `fit_ergm_rank` (method=:mcmle) at ergm.rank's MCMC budget
+# (n_samples=2048, burnin=8192, interval=512, one chain, bridge skipped) is
+# asserted on one Julia seed as
+#   |coef - mle_seed_mean| <= coefficient_sd_multiple * sqrt(1 + 1/5) * mle_seed_sd,
+# where `mle_seed_sd`/`mle_seed_mean` ([values]) are ergm.rank over its five
+# replication seeds. No number in this block is measured on ERGMRank.jl.
+# Justification of the rule: if ERGMRank.jl's MCMLE is the same estimator as
+# ergm.rank's, one Julia estimate is one more draw from ergm.rank's
+# seed-to-seed distribution, so its difference from the mean of five
+# independent R draws has sd sqrt(1 + 1/5) * sd_R, and 4 of that is a
+# 4-sigma band. Do not raise the multiple: a failure at 4 means the
+# estimators disagree.
+coefficient_sd_multiple = 4
+#
+# STANDARD ERRORS: within `std_errors_rtol` relative of `mle_std_errors_mean`
+# (the mean over ergm.rank's five replication seeds; its own seed-to-seed
+# relative spread is listed in [values] as `mle_std_errors_rel_sd`). Both
+# are the inverse Fisher information of a 2048-draw sample plus the
+# Monte-Carlo component. 0.15 as in newcomb_rank.toml: several times the
+# Monte-Carlo noise of ergm.rank's standard errors (the testset asserts
+# 0.15 >= 4 * sqrt(2) * mle_std_errors_rel_sd) and far below the swap-MPLE's
+# 2-3.3x anticonservatism, which must keep failing it.
+std_errors_rtol = 0.15
+#
+# THE SWAP-MPLE HAS NO TOLERANCE, BY DESIGN: the testset asserts that every
+# coefficient is MORE than `mple_gap_min_se` of an MLE standard error from
+# `mle_seed_mean` (observed 0.89, 0.83, 0.76) and that its pseudo-Hessian
+# standard errors are at least `mple_se_ratio_min` times narrower than
+# `mle_std_errors_mean` (observed 3.3, 2.2, 2.0).
+mple_gap_min_se = 0.5
+mple_se_ratio_min = 1.9
+
+[values]
+# --- the rankings, frozen. Julia rebuilds them exactly. -----------------
+n_actors = 17
+ranks_week1 = [[0, 7, 12, 11, 10, 4, 13, 14, 15, 16, 3, 9, 1, 5, 8, 6, 2], [8, 0, 16, 1, 11, 12, 2, 14, 10, 13, 15, 6, 7, 9, 5, 3, 4], [13, 10, 0, 7, 8, 11, 9, 15, 6, 5, 2, 1, 16, 12, 4, 14, 3], [13, 1, 15, 0, 14, 4, 3, 16, 12, 7, 6, 9, 8, 11, 10, 5, 2], [14, 10, 11, 7, 0, 16, 12, 4, 5, 6, 2, 3, 13, 15, 8, 9, 1], [7, 13, 11, 3, 15, 0, 10, 2, 4, 16, 14, 5, 1, 12, 9, 8, 6], [15, 4, 11, 3, 16, 8, 0, 6, 9, 10, 5, 2, 14, 12, 13, 7, 1], [9, 8, 16, 7, 10, 1, 14, 0, 11, 3, 2, 5, 4, 15, 12, 13, 6], [6, 16, 8, 14, 13, 11, 4, 15, 0, 7, 1, 2, 9, 5, 12, 10, 3], [2, 16, 9, 14, 11, 4, 3, 10, 7, 0, 15, 8, 12, 13, 1, 6, 5], [12, 7, 4, 8, 6, 14, 9, 16, 3, 13, 0, 2, 10, 15, 11, 5, 1], [15, 11, 2, 6, 5, 14, 7, 13, 10, 4, 3, 0, 16, 8, 9, 12, 1], [1, 15, 16, 7, 4, 2, 12, 14, 13, 8, 6, 11, 0, 10, 3, 9, 5], [14, 5, 8, 6, 13, 9, 2, 16, 1, 3, 12, 7, 15, 0, 4, 11, 10], [16, 9, 4, 8, 1, 13, 11, 12, 6, 2, 3, 5, 10, 15, 0, 14, 7], [8, 11, 15, 3, 13, 16, 14, 12, 1, 9, 2, 6, 10, 7, 5, 0, 4], [9, 15, 10, 2, 4, 11, 5, 12, 3, 7, 8, 1, 6, 16, 14, 13, 0]]
+ranks_week2 = [[0, 9, 14, 7, 11, 8, 16, 12, 3, 15, 13, 4, 1, 2, 10, 5, 6], [13, 0, 12, 1, 8, 10, 3, 15, 14, 16, 11, 5, 6, 7, 9, 4, 2], [13, 9, 0, 5, 4, 10, 14, 16, 6, 11, 8, 1, 12, 7, 2, 15, 3], [9, 1, 13, 0, 7, 5, 4, 15, 3, 16, 12, 6, 8, 11, 10, 14, 2], [2, 9, 12, 5, 0, 13, 15, 7, 11, 14, 4, 8, 1, 16, 6, 10, 3], [1, 12, 15, 4, 10, 0, 13, 6, 2, 14, 9, 11, 3, 5, 8, 16, 7], [15, 4, 13, 1, 14, 9, 0, 10, 5, 7, 6, 2, 11, 8, 12, 16, 3], [9, 14, 16, 7, 12, 1, 15, 0, 13, 2, 6, 8, 3, 11, 4, 10, 5], [10, 15, 12, 6, 11, 5, 4, 16, 0, 14, 1, 9, 13, 3, 8, 7, 2], [2, 16, 6, 14, 12, 4, 3, 9, 7, 0, 13, 11, 1, 15, 8, 10, 5], [11, 6, 3, 7, 4, 15, 8, 14, 2, 16, 0, 5, 10, 12, 13, 9, 1], [15, 6, 3, 4, 8, 14, 1, 13, 2, 10, 9, 0, 12, 16, 7, 11, 5], [1, 11, 16, 7, 2, 3, 8, 5, 9, 13, 6, 10, 0, 12, 14, 15, 4], [15, 12, 4, 2, 5, 10, 3, 16, 1, 14, 13, 9, 11, 0, 7, 6, 8], [14, 5, 2, 3, 1, 10, 8, 13, 7, 4, 16, 6, 11, 15, 0, 12, 9], [12, 14, 16, 6, 10, 15, 9, 13, 1, 4, 3, 5, 8, 7, 11, 0, 2], [10, 12, 7, 1, 2, 14, 6, 16, 3, 8, 9, 4, 5, 11, 13, 15, 0]]
+
+# --- observed sufficient statistics: deterministic, ASSERTED at 1e-9 ----
+summary_statistic_names = ["deference", "nonconformity.localAND", "inconsistency.rank"]
+summary_statistics = [806, 4487, 1008]
+
+# --- ergm.rank's MCMC MLE (the frozen seed) -------------------------------
+term_names = ["deference", "nonconformity.localAND", "inconsistency.rank"]
+mle_coefficients = [-0.20600845963621081, -0.00398775989547472, -0.13806449003218146]
+mle_std_errors = [0.046415410338176255, 0.0067808027674457084, 0.014687537083875376]
+
+# --- ergm.rank over five further seeds -------------------------------------
+mle_seed_sd = [0.0016033181413484094, 0.00031202079447792473, 0.00037827047699093036]
+mle_seed_mean = [-0.20533379166596377, -0.0043946431396106609, -0.13771867254940701]
+mle_std_errors_mean = [0.046953757515186767, 0.0067628460808497898, 0.014865353009505103]
+mle_std_errors_rel_sd = [0.018479061593756743, 0.019530235419739896, 0.010849118181413368]

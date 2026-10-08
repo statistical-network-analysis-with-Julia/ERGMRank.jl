@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">ERGMRank.jl</title>
+  <desc id="desc">An ego ordering three alters, marked by one, two and three rank strokes.</desc>
+  <path d="M44 128 152 48M44 128H152M44 128 152 208" fill="none" stroke="#4063D8" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="44" cy="128" r="25" fill="#4063D8"/>
+  <circle cx="152" cy="48" r="20" fill="#389826"/>
+  <circle cx="152" cy="128" r="20" fill="#9558B2"/>
+  <circle cx="152" cy="208" r="20" fill="#CB3C33"/>
+  <path d="M196 48H224" fill="none" stroke="#389826" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M196 119H224M196 137H224" fill="none" stroke="#9558B2" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M196 190H224M196 208H224M196 226H224" fill="none" stroke="#CB3C33" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
